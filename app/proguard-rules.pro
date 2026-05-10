@@ -20,8 +20,8 @@
 }
 
 # Keep Signal classes for OkHttp WebSocket + kotlinx.serialization
--keep class com.voicedrop.network.SignalingClient$Signal { *; }
--keep class com.voicedrop.network.SignalingClient$Signal$* { *; }
+-keep class com.voicedrop.network.Signal { *; }
+-keep class com.voicedrop.network.Signal$* { *; }
 
 # Room — keep all entities and DAOs
 -keep class com.voicedrop.storage.** { *; }

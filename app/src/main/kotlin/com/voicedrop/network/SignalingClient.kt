@@ -16,7 +16,6 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.util.concurrent.TimeUnit
 
-@Serializable
 sealed class Signal {
     @Serializable
     data class Hello(val type: String = "hello", val fingerprint: String, val stunAddr: String) : Signal()
@@ -77,11 +76,11 @@ class SignalingClient(
 
     fun send(signal: Signal) {
         val text = when (signal) {
-            is Signal.Hello -> json.encodeToString(signal)
-            is Signal.PeerHello -> json.encodeToString(signal)
-            is Signal.Presence -> json.encodeToString(signal)
-            is Signal.OutboxPing -> json.encodeToString(signal)
-            is Signal.OutboxReady -> json.encodeToString(signal)
+            is Signal.Hello -> json.encodeToString<Signal.Hello>(signal)
+            is Signal.PeerHello -> json.encodeToString<Signal.PeerHello>(signal)
+            is Signal.Presence -> json.encodeToString<Signal.Presence>(signal)
+            is Signal.OutboxPing -> json.encodeToString<Signal.OutboxPing>(signal)
+            is Signal.OutboxReady -> json.encodeToString<Signal.OutboxReady>(signal)
         }
         webSocket?.send(text)
     }
