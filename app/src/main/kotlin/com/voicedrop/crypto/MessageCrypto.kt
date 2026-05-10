@@ -161,6 +161,6 @@ enum class MessageType(val value: Byte) {
     ACK(4);
 
     companion object {
-        fun fromValue(b: Byte) = values().find { it.value == b }
+        fun fromValue(b: Byte) = entries.find { it.value == b }
     }
 }
