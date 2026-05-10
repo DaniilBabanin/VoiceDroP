@@ -83,7 +83,7 @@ class TalkTileService : TileService() {
         }
     }
 
-    override fun onLongClick() {
+    fun onLongClick() {
         scope.launch {
             val contacts = repository.getAllContacts().first()
             showDialog(ContactPickerDialog(this@TalkTileService, contacts) { contactId ->

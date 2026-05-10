@@ -18,7 +18,9 @@ class OpusEncoder {
     fun encode(pcmBytes: ByteArray): ByteArray {
         val buf = ByteBuffer.wrap(pcmBytes).order(ByteOrder.LITTLE_ENDIAN)
         val shorts = ShortArray(pcmBytes.size / 2) { buf.short }
-        return encoder.encode(shorts)
+        val outData = ByteArray(4000)
+        val outLen = encoder.encode(shorts, 0, shorts.size, outData, 0)
+        return outData.copyOf(outLen)
     }
 
     fun release() {
@@ -30,8 +32,5 @@ class OpusEncoder {
             sampleRate = sampleRate,
             channels = channels,
             application = OpusApplication.Voip
-        ).apply {
-            setBitrate(bitrate)
-            setComplexity(5)
-        }
+        )
 }

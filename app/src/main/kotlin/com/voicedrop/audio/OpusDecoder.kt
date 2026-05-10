@@ -16,7 +16,9 @@ class OpusDecoder {
 
     fun decode(opusBytes: ByteArray): ShortArray {
         val frameSize = sampleRate / 50  // 20ms at configured sample rate
-        return decoder.decode(opusBytes, frameSize)
+        val outPcm = ShortArray(frameSize)
+        decoder.decode(opusBytes, outPcm, frameSize)
+        return outPcm
     }
 
     fun release() {
