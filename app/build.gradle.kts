@@ -51,7 +51,7 @@ dependencies {
     implementation(libs.constraintlayout)
 
     implementation(libs.tink.android)
-    implementation(libs.libopus.android)
+    implementation(libs.kopus)
     implementation(libs.zxing.android.embedded)
 
     implementation(libs.room.runtime)

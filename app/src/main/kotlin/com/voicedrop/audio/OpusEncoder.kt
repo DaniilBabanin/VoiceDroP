@@ -1,25 +1,37 @@
 package com.voicedrop.audio
 
-import io.github.crow_misia.libopus.OpusEncoder as LibOpusEncoder
+import eu.buney.kopus.OpusApplication
+import eu.buney.kopus.OpusEncoder as KopusEncoder
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 class OpusEncoder {
 
-    private var encoder: LibOpusEncoder? = null
+    // Default-initialize so the class works without an explicit init() call
+    private var encoder: KopusEncoder = createEncoder(16000, 1, 24000)
 
     fun init(sampleRate: Int = 16000, channels: Int = 1, bitrate: Int = 24000) {
-        encoder = LibOpusEncoder.create(sampleRate, channels, LibOpusEncoder.Application.VOIP).apply {
-            setBitrate(bitrate)
-            setComplexity(5)
-        }
+        encoder.close()
+        encoder = createEncoder(sampleRate, channels, bitrate)
     }
 
     fun encode(pcmBytes: ByteArray): ByteArray {
-        val enc = encoder ?: throw IllegalStateException("Encoder not initialized")
-        return enc.encode(pcmBytes, pcmBytes.size / 2)
+        val buf = ByteBuffer.wrap(pcmBytes).order(ByteOrder.LITTLE_ENDIAN)
+        val shorts = ShortArray(pcmBytes.size / 2) { buf.short }
+        return encoder.encode(shorts)
     }
 
     fun release() {
-        encoder?.close()
-        encoder = null
+        encoder.close()
     }
+
+    private fun createEncoder(sampleRate: Int, channels: Int, bitrate: Int): KopusEncoder =
+        KopusEncoder(
+            sampleRate = sampleRate,
+            channels = channels,
+            application = OpusApplication.Voip
+        ).apply {
+            setBitrate(bitrate)
+            setComplexity(5)
+        }
 }

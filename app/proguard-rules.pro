@@ -31,8 +31,8 @@
 -keep class com.google.crypto.tink.** { *; }
 -dontwarn com.google.crypto.tink.**
 
-# libopus JNI — keep native method bindings
--keep class io.github.crow_misia.libopus.** { *; }
+# kopus / libopus JNI — keep native method bindings
+-keep class eu.buney.kopus.** { *; }
 -keepclasseswithmembernames class * {
     native <methods>;
 }
