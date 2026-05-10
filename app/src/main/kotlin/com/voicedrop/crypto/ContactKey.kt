@@ -36,7 +36,7 @@ object ContactKey {
 
     private fun hkdfSha256(ikm: ByteArray, salt: ByteArray, info: ByteArray, length: Int): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")
-        val actualSalt = salt.ifEmpty { ByteArray(32) }
+        val actualSalt = if (salt.isEmpty()) ByteArray(32) else salt
         mac.init(SecretKeySpec(actualSalt, "HmacSHA256"))
         val prk = mac.doFinal(ikm)
         mac.init(SecretKeySpec(prk, "HmacSHA256"))
