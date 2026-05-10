@@ -1,6 +1,5 @@
 package com.voicedrop.crypto
 
-import com.google.crypto.tink.aead.ChaCha20Poly1305Key
 import com.google.crypto.tink.subtle.ChaCha20Poly1305
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
