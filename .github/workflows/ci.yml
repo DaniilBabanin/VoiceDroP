@@ -7,8 +7,8 @@ on:
     branches: [ main ]
 
 jobs:
-  build-and-test:
-    name: Build, Test & Lint
+  build:
+    name: Build APK
     runs-on: ubuntu-latest
 
     steps:
@@ -38,9 +38,22 @@ jobs:
           build_exit=${PIPESTATUS[0]}
           if [ $build_exit -ne 0 ]; then
             echo ""
-            echo "=== KOTLIN/GRADLE ERRORS ==="
-            grep -E "^e: |^w: .*error" /tmp/build.log || echo "(no 'e:' lines — check full log above)"
-            echo "=== END ERRORS ==="
+            echo "══════════════════════════════════════════"
+            echo "  BUILD FAILED — KOTLIN/GRADLE ERRORS"
+            echo "══════════════════════════════════════════"
+            echo ""
+            echo "--- Kotlin compiler errors (e:) ---"
+            grep -E "^e: " /tmp/build.log || echo "(none)"
+            echo ""
+            echo "--- Failed tasks ---"
+            grep -E "^FAILURE:|> Task .*FAILED|What went wrong" /tmp/build.log || echo "(none)"
+            echo ""
+            echo "--- Exception / caused by ---"
+            grep -iE "^Caused by:|exception in thread|unresolved reference|error:" /tmp/build.log | head -30 || echo "(none)"
+            echo ""
+            echo "--- Last 40 lines of build output ---"
+            tail -40 /tmp/build.log
+            echo "══════════════════════════════════════════"
             exit $build_exit
           fi
 
