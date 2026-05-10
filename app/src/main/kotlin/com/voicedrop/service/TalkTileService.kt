@@ -4,6 +4,7 @@ import android.content.Intent
 import android.graphics.drawable.Icon
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
+import android.util.Log
 import com.voicedrop.R
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.MessageRepository
@@ -46,6 +47,7 @@ class TalkTileService : TileService() {
 
     override fun onClick() {
         val state = ServiceState.recordingState.value
+        Log.d(TAG, "onClick state=${state.state}")
 
         when (state.state) {
             ServiceState.State.RECORDING -> {
@@ -57,26 +59,31 @@ class TalkTileService : TileService() {
             }
             ServiceState.State.IDLE, ServiceState.State.SENDING -> {
                 scope.launch {
-                    val contacts = repository.getAllContacts().first()
-                    when {
-                        contacts.isEmpty() -> {
-                            showDialog(ContactPickerDialog(this@TalkTileService, emptyList()) {})
-                        }
-                        contacts.size == 1 -> {
-                            launchRecording(contacts[0].id)
-                        }
-                        else -> {
-                            val prefs = getSharedPreferences("voicedrop_settings", MODE_PRIVATE)
-                            val lastContactId = prefs.getString("pref_last_contact_id", null)
-                            val target = contacts.find { it.id == lastContactId }
-                            if (target != null) {
-                                launchRecording(target.id)
-                            } else {
-                                showDialog(ContactPickerDialog(this@TalkTileService, contacts) { contactId ->
-                                    launchRecording(contactId)
-                                })
+                    try {
+                        val contacts = repository.getAllContacts().first()
+                        Log.d(TAG, "onClick contacts=${contacts.size}")
+                        when {
+                            contacts.isEmpty() -> {
+                                showDialog(ContactPickerDialog(this@TalkTileService, emptyList()) {})
+                            }
+                            contacts.size == 1 -> {
+                                launchRecording(contacts[0].id)
+                            }
+                            else -> {
+                                val prefs = getSharedPreferences("voicedrop_settings", MODE_PRIVATE)
+                                val lastContactId = prefs.getString("pref_last_contact_id", null)
+                                val target = contacts.find { it.id == lastContactId }
+                                if (target != null) {
+                                    launchRecording(target.id)
+                                } else {
+                                    showDialog(ContactPickerDialog(this@TalkTileService, contacts) { contactId ->
+                                        launchRecording(contactId)
+                                    })
+                                }
                             }
                         }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "onClick coroutine failed", e)
                     }
                 }
             }
@@ -150,5 +157,9 @@ class TalkTileService : TileService() {
     override fun onDestroy() {
         scope.cancel()
         super.onDestroy()
+    }
+
+    companion object {
+        private const val TAG = "VoiceDrop/Tile"
     }
 }

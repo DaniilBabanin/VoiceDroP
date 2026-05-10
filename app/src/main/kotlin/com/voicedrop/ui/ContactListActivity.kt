@@ -36,6 +36,9 @@ class ContactListActivity : AppCompatActivity() {
 
         AutoDeleteWorker.schedule(this)
 
+        val toolbar = findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar)
+        setSupportActionBar(toolbar)
+
         adapter = ContactAdapter { contactId ->
             // Show messages for selected contact
         }

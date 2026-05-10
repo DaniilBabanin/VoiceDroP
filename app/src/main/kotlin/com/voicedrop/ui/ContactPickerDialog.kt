@@ -3,6 +3,7 @@ package com.voicedrop.ui
 import android.app.Dialog
 import android.content.Context
 import android.os.Bundle
+import android.view.ContextThemeWrapper
 import android.view.Window
 import android.view.WindowManager
 import android.widget.ArrayAdapter
@@ -14,7 +15,7 @@ class ContactPickerDialog(
     context: Context,
     private val contacts: List<ContactEntity>,
     private val onContactSelected: (String) -> Unit
-) : Dialog(context) {
+) : Dialog(ContextThemeWrapper(context, R.style.Theme_VoiceDrop)) {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

@@ -1,11 +1,14 @@
 package com.voicedrop.ui
 
 import android.os.Bundle
+import android.util.Log
+import android.view.MenuItem
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.Toolbar
 import com.voicedrop.R
 import com.voicedrop.crypto.KeyManager
 import kotlinx.coroutines.CoroutineScope
@@ -19,8 +22,19 @@ class SettingsActivity : AppCompatActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        Log.d(TAG, "onCreate start")
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_settings)
+        try {
+            setContentView(R.layout.activity_settings)
+            Log.d(TAG, "setContentView OK")
+        } catch (e: Exception) {
+            Log.e(TAG, "setContentView FAILED", e)
+            finish(); return
+        }
+
+        val toolbar = findViewById<Toolbar>(R.id.toolbar)
+        setSupportActionBar(toolbar)
+        supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
         val prefs = getSharedPreferences("voicedrop_settings", MODE_PRIVATE)
         val keyManager = KeyManager(this)
@@ -76,8 +90,20 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        if (item.itemId == android.R.id.home) {
+            finish()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
+    }
+
     override fun onDestroy() {
         scope.cancel()
         super.onDestroy()
+    }
+
+    companion object {
+        private const val TAG = "VoiceDrop/Settings"
     }
 }

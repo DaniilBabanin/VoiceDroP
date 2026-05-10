@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.view.MenuItem
 import android.view.View
 import android.widget.Button
 import android.widget.ImageView
@@ -13,6 +14,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.Toolbar
 import androidx.core.content.FileProvider
 import androidx.viewpager2.widget.ViewPager2
 import com.google.android.material.tabs.TabLayout
@@ -68,13 +70,23 @@ class QrPairActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_qr_pair)
 
+        val toolbar = findViewById<Toolbar>(R.id.toolbar)
+        setSupportActionBar(toolbar)
+        supportActionBar?.setDisplayHomeAsUpEnabled(true)
+
         keyManager = KeyManager(this)
         val db = AppDatabase.getInstance(this)
         repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())
 
         intent?.data?.let { uri ->
             if (intent.action == Intent.ACTION_VIEW) {
-                importFromUri(uri)
+                if (uri.scheme == "voicedrop") {
+                    val cardJson = uri.getQueryParameter("card")
+                    if (cardJson != null) handleScannedCard(cardJson)
+                    else showError("Invalid VoiceDrop QR code")
+                } else {
+                    importFromUri(uri)
+                }
                 return
             }
         }
@@ -109,11 +121,19 @@ class QrPairActivity : AppCompatActivity() {
         })
     }
 
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        if (item.itemId == android.R.id.home) {
+            finish()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
+    }
+
     internal fun openFilePicker() {
         filePickerLauncher.launch("application/x-voicedrop")
     }
 
-    private fun shareAsFile() {
+    internal fun shareAsFile() {
         scope.launch {
             val prefs = getSharedPreferences("voicedrop_settings", MODE_PRIVATE)
             val displayName = prefs.getString("display_name", "VoiceDrop User") ?: "VoiceDrop User"
@@ -151,14 +171,21 @@ class QrPairActivity : AppCompatActivity() {
 
                 handleScannedCard(content)
             } catch (e: Exception) {
+                android.util.Log.e(TAG, "importFromUri failed", e)
                 showError("Could not read contact card file")
             }
         }
     }
 
-    fun handleScannedCard(cardJson: String) {
+    fun handleScannedCard(text: String) {
+        android.util.Log.d(TAG, "handleScannedCard: ${text.take(80)}")
         scope.launch {
             try {
+                val cardJson = if (text.startsWith("voicedrop://")) {
+                    Uri.parse(text).getQueryParameter("card") ?: text
+                } else {
+                    text
+                }
                 val card = json.decodeFromString<ContactCard>(cardJson)
 
                 if (card.v != 1) {
@@ -178,6 +205,7 @@ class QrPairActivity : AppCompatActivity() {
                 showVerificationScreen(card, theirFingerprint, theirPublicKeyBytes, sessionKey, emojis)
 
             } catch (e: Exception) {
+                android.util.Log.e(TAG, "handleScannedCard failed", e)
                 showError("Invalid QR code — not a VoiceDrop contact card")
             }
         }
@@ -242,5 +270,9 @@ class QrPairActivity : AppCompatActivity() {
     override fun onDestroy() {
         scope.cancel()
         super.onDestroy()
+    }
+
+    companion object {
+        private const val TAG = "VoiceDrop/QrPair"
     }
 }

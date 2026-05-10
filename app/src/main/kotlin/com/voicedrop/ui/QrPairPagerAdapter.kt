@@ -1,6 +1,7 @@
 package com.voicedrop.ui
 
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -48,19 +49,18 @@ class MyQrFragment : Fragment() {
         val fp = keyManager.getFingerprint()
         val shortId = fp.take(8)
         val card = ContactCard(v = 1, id = shortId, name = displayName, pk = keyManager.getPublicKeyBase64())
-        val json = Json.encodeToString(card)
+        val cardJson = Json.encodeToString(card)
+        val qrContent = "voicedrop://pair?card=${Uri.encode(cardJson)}"
 
         val qrImageView = view.findViewById<ImageView>(R.id.image_qr)
         try {
             val encoder = BarcodeEncoder()
-            val bitmap: Bitmap = encoder.encodeBitmap(json, BarcodeFormat.QR_CODE, 512, 512)
+            val bitmap: Bitmap = encoder.encodeBitmap(qrContent, BarcodeFormat.QR_CODE, 512, 512)
             qrImageView.setImageBitmap(bitmap)
         } catch (_: Exception) {}
 
         view.findViewById<Button>(R.id.button_share_file)?.setOnClickListener {
-            (activity as? QrPairActivity)?.let { act ->
-                act.handleScannedCard(json)
-            }
+            (activity as? QrPairActivity)?.shareAsFile()
         }
     }
 
