@@ -1,5 +1,6 @@
 package com.voicedrop.ui
 
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.view.MenuItem
@@ -9,6 +10,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
+import com.google.android.gms.oss.licenses.OssLicensesMenuActivity
 import com.voicedrop.R
 import com.voicedrop.crypto.KeyManager
 import kotlinx.coroutines.CoroutineScope
@@ -58,6 +60,10 @@ class SettingsActivity : AppCompatActivity() {
                 .putString("signaling_url", url)
                 .apply()
             Toast.makeText(this, getString(R.string.url_saved), Toast.LENGTH_SHORT).show()
+        }
+
+        findViewById<Button>(R.id.button_open_source_licenses).setOnClickListener {
+            startActivity(Intent(this, OssLicensesMenuActivity::class.java))
         }
 
         val testConnectionButton = findViewById<Button>(R.id.button_test_connection)

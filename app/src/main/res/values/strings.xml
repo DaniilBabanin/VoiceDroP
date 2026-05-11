@@ -40,4 +40,5 @@
     <string name="connection_failed">Connection failed</string>
     <string name="url_saved">URL saved</string>
     <string name="permission_denied">Permission denied</string>
+    <string name="open_source_licenses">Open Source Licenses</string>
 </resources>
