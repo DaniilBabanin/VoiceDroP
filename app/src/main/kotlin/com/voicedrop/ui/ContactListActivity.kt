@@ -1,11 +1,15 @@
 package com.voicedrop.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -27,9 +31,14 @@ class ContactListActivity : AppCompatActivity() {
     private lateinit var repository: MessageRepository
     private lateinit var adapter: ContactAdapter
 
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { /* results ignored — permissions are best-effort at launch */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_contact_list)
+        requestMissingPermissions()
 
         val db = AppDatabase.getInstance(this)
         repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())
@@ -67,6 +76,19 @@ class ContactListActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun requestMissingPermissions() {
+        val needed = mutableListOf<String>()
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            needed.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (needed.isNotEmpty()) permissionLauncher.launch(needed.toTypedArray())
     }
 
     private fun checkOnboarding() {

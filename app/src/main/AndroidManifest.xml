@@ -58,7 +58,7 @@
             android:exported="false"
             android:noHistory="true"
             android:taskAffinity=""
-            android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
+            android:theme="@style/Theme.VoiceDrop.Translucent"/>
 
         <service
             android:name=".service.VoiceDropService"
