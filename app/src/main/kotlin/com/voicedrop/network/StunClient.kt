@@ -1,5 +1,6 @@
 package com.voicedrop.network
 
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
@@ -12,6 +13,7 @@ import java.nio.ByteOrder
 class StunClient {
 
     suspend fun getPublicAddress(): InetSocketAddress? = withContext(Dispatchers.IO) {
+        Log.d(TAG, "querying stun.l.google.com:19302")
         try {
             val socket = DatagramSocket()
             socket.soTimeout = 3000
@@ -26,8 +28,15 @@ class StunClient {
             socket.receive(responsePacket)
             socket.close()
 
-            parseStunResponse(responseBuffer, responsePacket.length)
+            val result = parseStunResponse(responseBuffer, responsePacket.length)
+            if (result != null) {
+                Log.i(TAG, "public address: $result")
+            } else {
+                Log.w(TAG, "response received but could not parse mapped address")
+            }
+            result
         } catch (e: Exception) {
+            Log.w(TAG, "STUN query failed: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
     }
@@ -90,6 +99,7 @@ class StunClient {
     }
 
     companion object {
+        private const val TAG = "VoiceDrop/Stun"
         internal const val MAGIC_COOKIE = 0x2112A442.toInt()
         private const val ATTR_MAPPED_ADDRESS = 0x0001
         private const val ATTR_XOR_MAPPED_ADDRESS = 0x0020

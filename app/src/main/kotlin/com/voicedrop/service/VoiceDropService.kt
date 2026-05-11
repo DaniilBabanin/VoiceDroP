@@ -161,8 +161,8 @@ class VoiceDropService : Service() {
                 Log.e(TAG, "Failed to send message", e)
             } finally {
                 releaseWakeLock()
-                notificationHelper.cancelNotification(NOTIFICATION_ID_RECORDING)
                 stopForeground(STOP_FOREGROUND_REMOVE)
+                notificationHelper.cancelNotification(NOTIFICATION_ID_RECORDING)
                 ServiceState.updateState(ServiceState.State.IDLE, null)
                 stopSelf()
             }

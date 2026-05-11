@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
+import android.util.Log
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
@@ -58,10 +59,18 @@ class LanDiscovery(
         }
 
         registrationListener = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(info: NsdServiceInfo) {}
-            override fun onRegistrationFailed(info: NsdServiceInfo, errorCode: Int) {}
-            override fun onServiceUnregistered(info: NsdServiceInfo) {}
-            override fun onUnregistrationFailed(info: NsdServiceInfo, errorCode: Int) {}
+            override fun onServiceRegistered(info: NsdServiceInfo) {
+                Log.i(TAG, "NSD registered: ${info.serviceName} on port $port")
+            }
+            override fun onRegistrationFailed(info: NsdServiceInfo, errorCode: Int) {
+                Log.e(TAG, "NSD registration failed: errorCode=$errorCode")
+            }
+            override fun onServiceUnregistered(info: NsdServiceInfo) {
+                Log.d(TAG, "NSD unregistered: ${info.serviceName}")
+            }
+            override fun onUnregistrationFailed(info: NsdServiceInfo, errorCode: Int) {
+                Log.w(TAG, "NSD unregistration failed: errorCode=$errorCode")
+            }
         }
 
         nsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener)
@@ -69,31 +78,56 @@ class LanDiscovery(
 
     private fun startDiscovery() {
         discoveryListener = object : NsdManager.DiscoveryListener {
-            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {}
-            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
-            override fun onDiscoveryStarted(serviceType: String) {}
-            override fun onDiscoveryStopped(serviceType: String) {}
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                Log.e(TAG, "NSD discovery start failed: errorCode=$errorCode")
+            }
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
+                Log.w(TAG, "NSD discovery stop failed: errorCode=$errorCode")
+            }
+            override fun onDiscoveryStarted(serviceType: String) {
+                Log.i(TAG, "NSD discovery started for $serviceType")
+            }
+            override fun onDiscoveryStopped(serviceType: String) {
+                Log.d(TAG, "NSD discovery stopped for $serviceType")
+            }
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                 val name = serviceInfo.serviceName
-                if (name != ownFingerprint && name in contactFingerprints) {
-                    nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
-                        override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {}
-                        override fun onServiceResolved(info: NsdServiceInfo) {
-                            val host = info.host?.hostAddress ?: return
-                            peerChannel.trySend(LanPeer(info.serviceName, host, info.port))
-                        }
-                    })
+                Log.d(TAG, "NSD service found: $name")
+                if (name == ownFingerprint) {
+                    Log.d(TAG, "NSD ignoring own service")
+                    return
                 }
+                if (name !in contactFingerprints) {
+                    Log.d(TAG, "NSD unknown service (not a contact): ${name.take(8)}")
+                    return
+                }
+                Log.i(TAG, "NSD contact found: ${name.take(8)} — resolving")
+                nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
+                    override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
+                        Log.w(TAG, "NSD resolve failed for ${info.serviceName.take(8)}: errorCode=$errorCode")
+                    }
+                    override fun onServiceResolved(info: NsdServiceInfo) {
+                        val host = info.host?.hostAddress ?: run {
+                            Log.w(TAG, "NSD resolved but no host address for ${info.serviceName.take(8)}")
+                            return
+                        }
+                        Log.i(TAG, "NSD resolved: fp=${info.serviceName.take(8)} at $host:${info.port}")
+                        peerChannel.trySend(LanPeer(info.serviceName, host, info.port))
+                    }
+                })
             }
 
-            override fun onServiceLost(serviceInfo: NsdServiceInfo) {}
+            override fun onServiceLost(serviceInfo: NsdServiceInfo) {
+                Log.d(TAG, "NSD service lost: ${serviceInfo.serviceName.take(8)}")
+            }
         }
 
         nsdManager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
     }
 
     companion object {
+        private const val TAG = "VoiceDrop/LAN"
         private const val SERVICE_TYPE = "_voicedrop._tcp"
     }
 }
