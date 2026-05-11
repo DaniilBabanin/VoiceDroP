@@ -41,7 +41,7 @@ export class SignalingRoom implements DurableObject {
     }
 
     const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
-    this.state.acceptWebSocket(server);
+    server.accept();
 
     server.addEventListener('message', (event) => {
       this.handleMessage(server, event.data as string);
