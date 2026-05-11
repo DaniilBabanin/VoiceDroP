@@ -20,9 +20,11 @@ import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.MessageRepository
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.io.File
@@ -41,6 +43,7 @@ class VoiceDropService : Service() {
 
     private var recordingContactId: String? = null
     private var recordStartTime: Long = 0L
+    private var recordingJob: Deferred<ByteArray>? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var playbackJob: Job? = null
 
@@ -54,31 +57,34 @@ class VoiceDropService : Service() {
 
         val prefs = getSharedPreferences("voicedrop_settings", Context.MODE_PRIVATE)
         val workerUrl = prefs.getString("signaling_url", "") ?: ""
-        connectionManager = ConnectionManager(this, repository, keyManager.getFingerprint(), workerUrl)
+        connectionManager = ConnectionManager(this, repository, keyManager, workerUrl)
         connectionManager.start()
+
+        // Stay alive as a foreground service so the TCP listener is always up for incoming messages
+        startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_RECORD_START -> {
-                val contactId = intent.getStringExtra(EXTRA_CONTACT_ID) ?: return START_NOT_STICKY
+                val contactId = intent.getStringExtra(EXTRA_CONTACT_ID) ?: return START_STICKY
                 startRecording(contactId)
             }
             ACTION_RECORD_STOP -> stopRecording()
             ACTION_PLAY -> {
-                val uuid = intent.getStringExtra(EXTRA_UUID) ?: return START_NOT_STICKY
+                val uuid = intent.getStringExtra(EXTRA_UUID) ?: return START_STICKY
                 play(uuid)
             }
             ACTION_STOP_PLAY -> stopPlay()
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private fun startRecording(contactId: String) {
         recordingContactId = contactId
         recordStartTime = System.currentTimeMillis()
 
-        val contact = scope.launch {
+        scope.launch {
             val c = repository.getContact(contactId)
             val contactName = c?.name ?: "Contact"
 
@@ -90,9 +96,12 @@ class VoiceDropService : Service() {
 
             try {
                 audioRecorder.start()
+                // Launch the capture loop; await it in stopRecording() to get the opus bytes
+                recordingJob = scope.async { audioRecorder.recordLoop { } }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start recording", e)
-                stopSelf()
+                startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
+                ServiceState.updateState(ServiceState.State.IDLE, null)
             }
         }
     }
@@ -104,11 +113,13 @@ class VoiceDropService : Service() {
 
             vibrateSingle()
             ServiceState.updateState(ServiceState.State.SENDING, contactId)
-
             notificationHelper.updateRecordingNotification(NOTIFICATION_ID_RECORDING, "Sending…")
 
             try {
-                val opusBytes = audioRecorder.stop()
+                // Signal the record loop to finish and collect the encoded audio
+                audioRecorder.stopRecording()
+                val opusBytes = recordingJob?.await() ?: ByteArray(0)
+                recordingJob = null
                 val durationMs = (System.currentTimeMillis() - recordStartTime).toInt()
 
                 val contact = repository.getContact(contactId) ?: return@launch
@@ -161,10 +172,9 @@ class VoiceDropService : Service() {
                 Log.e(TAG, "Failed to send message", e)
             } finally {
                 releaseWakeLock()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                notificationHelper.cancelNotification(NOTIFICATION_ID_RECORDING)
+                // Return to idle foreground state — keep service alive for incoming messages
+                startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
                 ServiceState.updateState(ServiceState.State.IDLE, null)
-                stopSelf()
             }
         }
     }
@@ -210,13 +220,11 @@ class VoiceDropService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        scope.launch {
-            recordingContactId?.let {
-                audioRecorder.stop()
-                recordingContactId = null
-            }
-            releaseWakeLock()
-        }
+        audioRecorder.stopRecording()
+        recordingJob?.cancel()
+        recordingJob = null
+        recordingContactId = null
+        releaseWakeLock()
         stopSelf()
     }
 
@@ -269,6 +277,7 @@ class VoiceDropService : Service() {
         const val ACTION_STOP_PLAY = "com.voicedrop.ACTION_STOP_PLAY"
         const val EXTRA_CONTACT_ID = "contact_id"
         const val EXTRA_UUID = "uuid"
+        const val NOTIFICATION_ID_IDLE = 1000
         const val NOTIFICATION_ID_RECORDING = 1001
         private const val TAG = "VoiceDropService"
 

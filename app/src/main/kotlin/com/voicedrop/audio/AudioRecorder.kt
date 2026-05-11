@@ -47,31 +47,9 @@ class AudioRecorder {
         audioRecord!!.startRecording()
     }
 
-    suspend fun stop(): ByteArray = withContext(Dispatchers.IO) {
+    // Signal the recordLoop to stop; the Deferred returned by recordLoop() carries the bytes.
+    fun stopRecording() {
         recording = false
-        val ar = audioRecord ?: return@withContext ByteArray(0)
-        audioRecord = null
-
-        val encoder = OpusEncoder()
-        encoder.init(sampleRate, 1, 24000)
-
-        val output = ByteArrayOutputStream()
-        val buffer = ShortArray(frameSize)
-
-        // Drain remaining audio
-        var read = ar.read(buffer, 0, frameSize)
-        while (read > 0) {
-            val pcmBytes = shortsToBytes(buffer, read)
-            val encoded = encoder.encode(pcmBytes)
-            output.write(encoded.size.toLittleEndianBytes())
-            output.write(encoded)
-            read = ar.read(buffer, 0, frameSize)
-        }
-
-        ar.stop()
-        ar.release()
-        encoder.release()
-        output.toByteArray()
     }
 
     suspend fun recordLoop(onFrame: (ByteArray) -> Unit): ByteArray = withContext(Dispatchers.IO) {

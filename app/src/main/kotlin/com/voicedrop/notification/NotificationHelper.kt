@@ -87,6 +87,17 @@ class NotificationHelper(private val context: Context) {
             .build()
     }
 
+    fun buildIdleNotification(): Notification {
+        return NotificationCompat.Builder(context, CHANNEL_RECORDING)
+            .setSmallIcon(R.drawable.ic_tile_idle)
+            .setContentTitle("VoiceDrop")
+            .setContentText("Listening for messages")
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .build()
+    }
+
     fun buildRecordingNotification(contactName: String): Notification {
         return NotificationCompat.Builder(context, CHANNEL_RECORDING)
             .setSmallIcon(R.drawable.ic_tile_recording)

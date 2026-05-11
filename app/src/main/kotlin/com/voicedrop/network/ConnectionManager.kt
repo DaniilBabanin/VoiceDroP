@@ -6,6 +6,14 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.util.Log
+import com.voicedrop.crypto.ContactKey
+import com.voicedrop.crypto.KeyManager
+import com.voicedrop.crypto.MessageCrypto
+import com.voicedrop.crypto.MessageType
+import com.voicedrop.crypto.ParsedFrame
+import com.voicedrop.notification.NotificationHelper
+import com.voicedrop.storage.ContactEntity
+import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.MessageRepository
 import com.voicedrop.storage.PendingActionEntity
 import kotlinx.coroutines.CoroutineScope
@@ -23,16 +31,21 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 class ConnectionManager(
     private val context: Context,
     private val repository: MessageRepository,
-    private val ownFingerprint: String,
+    private val keyManager: KeyManager,
     private val workerUrl: String
 ) {
+    private val ownFingerprint = keyManager.getFingerprint()
+    private val notificationHelper = NotificationHelper(context)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val connections = mutableMapOf<String, PeerConnection>()
@@ -98,14 +111,14 @@ class ConnectionManager(
         Log.i(TAG, "sendToContact fp=$fp frameBytes=${frame.size}")
         val mutex = mutexes.getOrPut(contactId) { Mutex() }
         mutex.withLock {
-            // Only fast paths here; signaling is slow and runs via backoff
             val sent = tryExistingConnection(contactId, frame)
                 || tryLanConnect(contactId, frame)
+                || tryStunConnect(contactId, frame)
 
             if (sent) {
-                Log.i(TAG, "sendToContact fp=$fp: delivered via fast path")
+                Log.i(TAG, "sendToContact fp=$fp: delivered")
             } else {
-                Log.w(TAG, "sendToContact fp=$fp: fast paths failed — queuing outbox, starting backoff")
+                Log.w(TAG, "sendToContact fp=$fp: all paths failed — queuing outbox, starting backoff")
                 enqueueOutbox(contactId, frame)
                 startActiveBackoff(contactId)
             }
@@ -331,6 +344,7 @@ class ConnectionManager(
         Log.d(TAG, "receiveLoop fp=${contactId.take(8)}: started")
         conn.receiveFlow().collect { frame ->
             Log.i(TAG, "receiveLoop fp=${contactId.take(8)}: received ${frame.size} bytes")
+            processFrame(frame)
         }
         Log.d(TAG, "receiveLoop fp=${contactId.take(8)}: ended")
     }
@@ -364,10 +378,115 @@ class ConnectionManager(
         scope.launch {
             conn.receiveFlow().collect { frame ->
                 Log.i(TAG, "handleIncoming: received ${frame.size} bytes from $addr")
-                // TODO: parse frame header to identify sender, then dispatch to message handler
+                processFrame(frame)
             }
             Log.d(TAG, "handleIncoming: flow ended for $addr")
         }
+    }
+
+    private suspend fun processFrame(frame: ByteArray) {
+        // Wire frame layout: [4-byte inner length][32-byte senderFp][32-byte recipFp][16-byte uuid][8-byte ts][ciphertext]
+        val minHeaderSize = 4 + 32 + 32 + 16 + 8
+        if (frame.size < minHeaderSize) {
+            Log.w(TAG, "processFrame: frame too short (${frame.size})")
+            return
+        }
+
+        val senderFp = frame.copyOfRange(4, 36).joinToString("") { "%02x".format(it) }
+        Log.d(TAG, "processFrame: sender=${senderFp.take(8)}")
+
+        val contact = repository.getContact(senderFp) ?: run {
+            Log.w(TAG, "processFrame: unknown sender ${senderFp.take(8)}")
+            return
+        }
+
+        val sessionKey = try {
+            ContactKey.deriveSessionKey(
+                keyManager.getPrivateKeyBytes(),
+                android.util.Base64.decode(contact.publicKeyBase64, android.util.Base64.NO_WRAP)
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "processFrame: key derivation failed — ${e.message}")
+            return
+        }
+
+        val parsed = try {
+            MessageCrypto.parseFrame(frame, sessionKey)
+        } catch (e: Exception) {
+            Log.w(TAG, "processFrame: decrypt/parse failed — ${e.message}")
+            return
+        }
+
+        val payloadResult = try {
+            MessageCrypto.parsePlaintext(parsed.plaintext)
+        } catch (e: Exception) {
+            Log.w(TAG, "processFrame: payload parse failed — ${e.message}")
+            return
+        }
+
+        when (payloadResult.type) {
+            MessageType.VOICE -> {
+                Log.i(TAG, "processFrame: VOICE from ${senderFp.take(8)}")
+                handleVoiceMessage(payloadResult.payload, parsed, contact, sessionKey)
+            }
+            MessageType.DELETE -> Log.d(TAG, "processFrame: DELETE (unhandled)")
+            MessageType.PING   -> Log.d(TAG, "processFrame: PING")
+            MessageType.ACK    -> Log.d(TAG, "processFrame: ACK")
+        }
+    }
+
+    private suspend fun handleVoiceMessage(
+        payload: ByteArray,
+        frame: ParsedFrame,
+        contact: ContactEntity,
+        sessionKey: ByteArray
+    ) {
+        if (payload.size < 4 + 8) {
+            Log.w(TAG, "handleVoiceMessage: payload too short")
+            return
+        }
+        val buf = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+        val durationMs = buf.int
+        val deleteAfterMs = buf.long
+        val opusSize = payload.size - 4 - 8
+        if (opusSize <= 0) {
+            Log.w(TAG, "handleVoiceMessage: empty audio")
+            return
+        }
+        val opusBytes = ByteArray(opusSize).also { buf.get(it) }
+
+        val uuid = frame.uuid.toString()
+
+        if (repository.getMessage(uuid) != null) {
+            Log.d(TAG, "handleVoiceMessage: duplicate, ignoring $uuid")
+            return
+        }
+
+        val messagesDir = File(context.filesDir, "messages")
+        messagesDir.mkdirs()
+        val encFile = File(messagesDir, "$uuid.enc")
+        encFile.writeBytes(MessageCrypto.encrypt(sessionKey, opusBytes))
+
+        val now = System.currentTimeMillis()
+        repository.insertMessage(
+            MessageEntity(
+                uuid = uuid,
+                contactId = contact.id,
+                direction = MessageEntity.DIRECTION_INBOUND,
+                state = MessageEntity.STATE_DELIVERED,
+                encryptedFilePath = encFile.absolutePath,
+                durationMs = durationMs,
+                deleteAfterMs = deleteAfterMs,
+                scheduledDeleteAt = if (deleteAfterMs > 0) now + deleteAfterMs else 0L,
+                transcription = null,
+                createdAt = frame.timestampMs,
+                sentAt = 0L,
+                deliveredAt = now
+            )
+        )
+
+        notificationHelper.notifyIncoming(contact, uuid, durationMs)
+        Log.i(TAG, "handleVoiceMessage: saved ${durationMs}ms from ${contact.id.take(8)}")
     }
 
     private suspend fun startLanDiscovery() {
