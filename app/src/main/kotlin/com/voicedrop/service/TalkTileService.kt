@@ -1,7 +1,9 @@
 package com.voicedrop.service
 
+import android.app.PendingIntent
 import android.content.Intent
 import android.graphics.drawable.Icon
+import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import android.util.Log
@@ -55,7 +57,7 @@ class TalkTileService : TileService() {
                     action = VoiceDropService.ACTION_RECORD_STOP
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
-                startActivityAndCollapse(intent)
+                startTileActivity(intent)
             }
             ServiceState.State.IDLE, ServiceState.State.SENDING -> {
                 scope.launch {
@@ -105,7 +107,20 @@ class TalkTileService : TileService() {
             putExtra(VoiceDropService.EXTRA_CONTACT_ID, contactId)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        startActivityAndCollapse(intent)
+        startTileActivity(intent)
+    }
+
+    private fun startTileActivity(intent: Intent) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val pi = PendingIntent.getActivity(
+                this, intent.action.hashCode(), intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            startActivityAndCollapse(pi)
+        } else {
+            @Suppress("DEPRECATION")
+            startActivityAndCollapse(intent)
+        }
     }
 
     private fun updateTile(state: ServiceState.RecordingState) {
