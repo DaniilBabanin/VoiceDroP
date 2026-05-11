@@ -44,7 +44,7 @@
                 android:layout_height="1dp"
                 android:layout_marginTop="24dp"
                 android:layout_marginBottom="16dp"
-                android:background="?attr/dividerColor"/>
+                android:background="@color/color_divider"/>
 
             <!-- Signaling URL -->
             <TextView
@@ -92,7 +92,7 @@
                 android:layout_height="1dp"
                 android:layout_marginTop="24dp"
                 android:layout_marginBottom="16dp"
-                android:background="?attr/dividerColor"/>
+                android:background="@color/color_divider"/>
 
             <!-- My fingerprint -->
             <TextView
@@ -115,7 +115,7 @@
                 android:layout_height="1dp"
                 android:layout_marginTop="24dp"
                 android:layout_marginBottom="16dp"
-                android:background="?attr/dividerColor"/>
+                android:background="@color/color_divider"/>
 
             <Button
                 android:id="@+id/button_open_source_licenses"
