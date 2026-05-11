@@ -12,12 +12,18 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 
@@ -35,7 +41,12 @@ class ConnectionManager(
     private val connector = PeerConnector()
     private val stunClient = StunClient()
 
-    private var signalingClient: SignalingClient? = null
+    // LAN peers seen via NSD — keyed by fingerprint
+    private val lanPeers = mutableMapOf<String, LanPeer>()
+
+    // Persistent signaling connections for presence (one per contact)
+    private val signalingClients = mutableMapOf<String, SignalingClient>()
+
     private var lanDiscovery: LanDiscovery? = null
     private var listenPort: Int = 0
     private var listenServerSocket: ServerSocket? = null
@@ -63,13 +74,15 @@ class ConnectionManager(
         Log.i(TAG, "Listening on port $listenPort")
         scope.launch { startListening() }
         scope.launch { startLanDiscovery() }
+        if (workerUrl.isNotBlank()) scope.launch { startSignalingPresence() }
     }
 
     fun stop() {
         Log.i(TAG, "stop")
         runCatching { connectivityManager.unregisterNetworkCallback(networkCallback) }
         lanDiscovery?.stop()
-        signalingClient?.disconnect()
+        signalingClients.values.forEach { it.disconnect() }
+        signalingClients.clear()
         listenServerSocket?.close()
         connections.values.forEach { it.close() }
         scope.cancel()
@@ -85,14 +98,14 @@ class ConnectionManager(
         Log.i(TAG, "sendToContact fp=$fp frameBytes=${frame.size}")
         val mutex = mutexes.getOrPut(contactId) { Mutex() }
         mutex.withLock {
+            // Only fast paths here; signaling is slow and runs via backoff
             val sent = tryExistingConnection(contactId, frame)
                 || tryLanConnect(contactId, frame)
-                || tryStunConnect(contactId, frame)
 
             if (sent) {
-                Log.i(TAG, "sendToContact fp=$fp: delivered")
+                Log.i(TAG, "sendToContact fp=$fp: delivered via fast path")
             } else {
-                Log.w(TAG, "sendToContact fp=$fp: all paths failed — queuing outbox")
+                Log.w(TAG, "sendToContact fp=$fp: fast paths failed — queuing outbox, starting backoff")
                 enqueueOutbox(contactId, frame)
                 startActiveBackoff(contactId)
             }
@@ -125,32 +138,93 @@ class ConnectionManager(
 
     private suspend fun tryLanConnect(contactId: String, frame: ByteArray): Boolean {
         val fp = contactId.take(8)
-        Log.d(TAG, "path2 fp=$fp: trying LAN (5s timeout)")
-        val peer = withTimeoutOrNull(5_000L) {
-            null as LanPeer?
-        }
+        val peer = lanPeers[contactId]
         if (peer == null) {
-            Log.d(TAG, "path2 fp=$fp: no LAN peer found")
+            Log.d(TAG, "path2 fp=$fp: no LAN peer cached")
             return false
         }
-        Log.i(TAG, "path2 fp=$fp: LAN peer found at ${peer.host}:${peer.port}")
+        Log.i(TAG, "path2 fp=$fp: LAN peer at ${peer.host}:${peer.port}")
         return connectAndSend(contactId, peer.host, peer.port, frame)
     }
 
     private suspend fun tryStunConnect(contactId: String, frame: ByteArray): Boolean {
         val fp = contactId.take(8)
         if (workerUrl.isBlank()) {
-            Log.d(TAG, "path3 fp=$fp: skipped (no signaling URL configured)")
+            Log.d(TAG, "path3 fp=$fp: skipped (no signaling URL)")
             return false
         }
+
         Log.d(TAG, "path3 fp=$fp: getting STUN address")
-        val stunAddr = stunClient.getPublicAddress()
-        if (stunAddr == null) {
+        val stunResult = stunClient.getPublicAddress()
+        val ourIp = stunResult?.address?.hostAddress ?: run {
             Log.w(TAG, "path3 fp=$fp: STUN failed — no public address")
             return false
         }
-        Log.i(TAG, "path3 fp=$fp: STUN resolved $stunAddr — signaling/hole-punch not yet implemented")
-        return false
+
+        // Use our TCP listen port with the STUN-resolved public IP
+        val ourStunStr = "$ourIp:$listenPort"
+        val roomKey = deriveRoomKey(ownFingerprint, contactId)
+        Log.i(TAG, "path3 fp=$fp: STUN=$ourStunStr room=${roomKey.take(16)}…")
+
+        val peerHello: Signal.PeerHello? = try {
+            coroutineScope {
+                val sendClient = SignalingClient(workerUrl, ownFingerprint)
+                // Start collecting BEFORE connecting to avoid race with fast server responses
+                val collector = async {
+                    withTimeoutOrNull(15_000L) {
+                        sendClient.signals
+                            .filterIsInstance<Signal.PeerHello>()
+                            .filter { it.fingerprint == contactId }
+                            .first()
+                    }
+                }
+                val connected = sendClient.connect(roomKey, ourStunStr)
+                val hello = if (connected) collector.await() else null
+                sendClient.disconnect()
+
+                // Re-register our presence after the send client disconnects
+                signalingClients[contactId]?.send(
+                    Signal.Hello(fingerprint = ownFingerprint, stunAddr = ourStunStr)
+                )
+
+                hello
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "path3 fp=$fp: signaling error — ${e.message}")
+            return false
+        }
+
+        if (peerHello == null) {
+            Log.w(TAG, "path3 fp=$fp: peer not in signaling room within 15s")
+            return false
+        }
+
+        Log.i(TAG, "path3 fp=$fp: peer at ${peerHello.stunAddr} — connecting")
+        val parts = peerHello.stunAddr.split(":")
+        if (parts.size != 2) {
+            Log.w(TAG, "path3 fp=$fp: malformed stunAddr=${peerHello.stunAddr}")
+            return false
+        }
+        val peerHost = parts[0]
+        val peerPort = parts[1].toIntOrNull() ?: run {
+            Log.w(TAG, "path3 fp=$fp: invalid port in stunAddr")
+            return false
+        }
+
+        val socket = connector.connectDirect(peerHost, peerPort)
+            ?: connector.holePunch(listenPort, InetSocketAddress(peerHost, peerPort))
+
+        if (socket == null) {
+            Log.w(TAG, "path3 fp=$fp: direct and hole-punch both failed to $peerHost:$peerPort")
+            return false
+        }
+
+        val conn = PeerConnection(socket)
+        connections[contactId] = conn
+        scope.launch { receiveLoop(contactId, conn) }
+        conn.send(frame)
+        Log.i(TAG, "path3 fp=$fp: sent ${frame.size} bytes via signaling/WAN path")
+        return true
     }
 
     private suspend fun connectAndSend(
@@ -164,7 +238,7 @@ class ConnectionManager(
             Log.d(TAG, "connectAndSend fp=$fp: connecting to $host:$port")
             val socket = connector.connectDirect(host, port)
             if (socket == null) {
-                Log.w(TAG, "connectAndSend fp=$fp: connectDirect timed out")
+                Log.w(TAG, "connectAndSend fp=$fp: timed out")
                 return false
             }
             val conn = PeerConnection(socket)
@@ -233,7 +307,7 @@ class ConnectionManager(
             } else {
                 allSent = false
                 repository.incrementRetryCount(action.id)
-                Log.d(TAG, "flush fp=$fp: action ${action.id} still pending (retry count incremented)")
+                Log.d(TAG, "flush fp=$fp: action ${action.id} still pending")
             }
         }
         return allSent
@@ -270,11 +344,11 @@ class ConnectionManager(
             return
         }
         listenServerSocket = server
-        Log.i(TAG, "startListening: accepting connections on port $listenPort")
+        Log.i(TAG, "startListening: accepting on port $listenPort")
         while (true) {
             try {
                 val socket = server.accept()
-                Log.i(TAG, "startListening: incoming connection from ${socket.inetAddress.hostAddress}")
+                Log.i(TAG, "startListening: incoming from ${socket.inetAddress.hostAddress}")
                 scope.launch { handleIncoming(socket) }
             } catch (e: Exception) {
                 Log.d(TAG, "startListening: server socket closed — ${e.message}")
@@ -283,20 +357,35 @@ class ConnectionManager(
         }
     }
 
-    private suspend fun handleIncoming(socket: Socket) {
+    private fun handleIncoming(socket: Socket) {
         val addr = socket.inetAddress.hostAddress
-        Log.i(TAG, "handleIncoming: from $addr — awaiting first frame to identify peer")
+        Log.i(TAG, "handleIncoming: from $addr")
         val conn = PeerConnection(socket)
-        // TODO: read first frame, extract sender fingerprint, register connection
+        scope.launch {
+            conn.receiveFlow().collect { frame ->
+                Log.i(TAG, "handleIncoming: received ${frame.size} bytes from $addr")
+                // TODO: parse frame header to identify sender, then dispatch to message handler
+            }
+            Log.d(TAG, "handleIncoming: flow ended for $addr")
+        }
     }
 
     private suspend fun startLanDiscovery() {
         Log.i(TAG, "startLanDiscovery: registering _voicedrop._tcp on port $listenPort")
-        val contacts = mutableSetOf<String>()
-        lanDiscovery = LanDiscovery(context, ownFingerprint, contacts)
+        val contacts = try {
+            repository.getAllContacts().first()
+        } catch (e: Exception) {
+            Log.w(TAG, "startLanDiscovery: failed to load contacts — ${e.message}")
+            emptyList()
+        }
+        val contactFingerprints = contacts.map { it.id }.toSet()
+
+        lanDiscovery = LanDiscovery(context, ownFingerprint, contactFingerprints)
         lanDiscovery?.start(listenPort)
         lanDiscovery?.discoveredPeers?.collect { peer ->
-            Log.i(TAG, "LAN peer discovered: fp=${peer.fingerprint.take(8)} at ${peer.host}:${peer.port}")
+            Log.i(TAG, "LAN: fp=${peer.fingerprint.take(8)} at ${peer.host}:${peer.port}")
+            lanPeers[peer.fingerprint] = peer
+
             if (lanDiscovery!!.shouldInitiate(peer.fingerprint)) {
                 Log.d(TAG, "LAN: we initiate to fp=${peer.fingerprint.take(8)}")
                 val actions = repository.getPendingActionsForContact(peer.fingerprint)
@@ -309,6 +398,62 @@ class ConnectionManager(
                 Log.d(TAG, "LAN: peer fp=${peer.fingerprint.take(8)} initiates — we listen")
             }
         }
+    }
+
+    private suspend fun startSignalingPresence() {
+        Log.i(TAG, "presence: starting (workerUrl=${workerUrl.take(40)})")
+
+        val stunResult = stunClient.getPublicAddress()
+        val ourIp = stunResult?.address?.hostAddress ?: "0.0.0.0"
+        val ourStunStr = "$ourIp:$listenPort"
+
+        val contacts = try {
+            repository.getAllContacts().first()
+        } catch (e: Exception) {
+            Log.w(TAG, "presence: failed to load contacts — ${e.message}")
+            return
+        }
+
+        if (contacts.isEmpty()) {
+            Log.d(TAG, "presence: no contacts, skipping")
+            return
+        }
+
+        Log.i(TAG, "presence: connecting to ${contacts.size} room(s), ourAddr=$ourStunStr")
+
+        for (contact in contacts) {
+            val roomKey = deriveRoomKey(ownFingerprint, contact.id)
+            val client = SignalingClient(workerUrl, ownFingerprint)
+            client.connect(roomKey, ourStunStr)
+            signalingClients[contact.id] = client
+            Log.d(TAG, "presence: joined room for fp=${contact.id.take(8)}")
+
+            scope.launch {
+                client.signals.collect { signal ->
+                    when (signal) {
+                        is Signal.PeerHello -> {
+                            Log.i(TAG, "presence: fp=${contact.id.take(8)} appeared at ${signal.stunAddr}")
+                            // Peer is online; if we have pending messages, flush them
+                            val pending = repository.getPendingActionsForContact(contact.id)
+                            if (pending.isNotEmpty()) {
+                                Log.d(TAG, "presence: flushing ${pending.size} pending action(s) for fp=${contact.id.take(8)}")
+                                flushOutboxForContact(contact.id)
+                            }
+                        }
+                        is Signal.Presence -> {
+                            Log.d(TAG, "presence: fp=${contact.id.take(8)} online=${signal.online}")
+                        }
+                        else -> {}
+                    }
+                }
+                Log.d(TAG, "presence: signal flow ended for fp=${contact.id.take(8)}")
+            }
+        }
+    }
+
+    private fun deriveRoomKey(fp1: String, fp2: String): String {
+        val sorted = listOf(fp1, fp2).sorted()
+        return sorted[0] + sorted[1]
     }
 
     companion object {
