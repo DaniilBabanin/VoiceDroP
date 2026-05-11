@@ -13,30 +13,29 @@ import java.nio.ByteOrder
 class StunClient {
 
     suspend fun getPublicAddress(): InetSocketAddress? = withContext(Dispatchers.IO) {
-        Log.d(TAG, "querying stun.l.google.com:19302")
-        try {
+        for ((host, port) in STUN_SERVERS) {
+            val result = queryStun(host, port)
+            if (result != null) return@withContext result
+        }
+        Log.w(TAG, "all STUN servers failed")
+        null
+    }
+
+    private fun queryStun(host: String, port: Int): InetSocketAddress? {
+        Log.d(TAG, "querying $host:$port")
+        return try {
             val socket = DatagramSocket()
             socket.soTimeout = 3000
-
             val request = buildStunBindingRequest()
-            val stunAddr = InetAddress.getByName("stun.l.google.com")
-            val packet = DatagramPacket(request, request.size, stunAddr, 19302)
-            socket.send(packet)
-
-            val responseBuffer = ByteArray(512)
-            val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
-            socket.receive(responsePacket)
+            val addr = InetAddress.getByName(host)
+            socket.send(DatagramPacket(request, request.size, addr, port))
+            val buf = ByteArray(512)
+            val pkt = DatagramPacket(buf, buf.size)
+            socket.receive(pkt)
             socket.close()
-
-            val result = parseStunResponse(responseBuffer, responsePacket.length)
-            if (result != null) {
-                Log.i(TAG, "public address: $result")
-            } else {
-                Log.w(TAG, "response received but could not parse mapped address")
-            }
-            result
+            parseStunResponse(buf, pkt.length)?.also { Log.i(TAG, "public address via $host: $it") }
         } catch (e: Exception) {
-            Log.w(TAG, "STUN query failed: ${e.javaClass.simpleName}: ${e.message}")
+            Log.w(TAG, "STUN query failed ($host:$port): ${e.javaClass.simpleName}: ${e.message}")
             null
         }
     }
@@ -103,6 +102,12 @@ class StunClient {
         internal const val MAGIC_COOKIE = 0x2112A442.toInt()
         private const val ATTR_MAPPED_ADDRESS = 0x0001
         private const val ATTR_XOR_MAPPED_ADDRESS = 0x0020
+
+        private val STUN_SERVERS = listOf(
+            "stun.cloudflare.com" to 3478,
+            "stun.l.google.com" to 19302,
+            "stun1.l.google.com" to 19302,
+        )
 
         // Internal for testing
         internal fun parseResponse(data: ByteArray): InetSocketAddress? =
