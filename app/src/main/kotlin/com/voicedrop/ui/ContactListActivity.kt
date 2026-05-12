@@ -16,6 +16,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.voicedrop.R
 import com.voicedrop.service.AutoDeleteWorker
+import com.voicedrop.service.VoiceDropService
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.MessageRepository
 import kotlinx.coroutines.CoroutineScope
@@ -44,6 +45,7 @@ class ContactListActivity : AppCompatActivity() {
         repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())
 
         AutoDeleteWorker.schedule(this)
+        startForegroundService(Intent(this, VoiceDropService::class.java))
 
         val toolbar = findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar)
         setSupportActionBar(toolbar)
