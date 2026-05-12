@@ -22,6 +22,9 @@ interface MessageDao {
     @Query("UPDATE messages SET transcription = :transcription WHERE uuid = :uuid")
     suspend fun updateTranscription(uuid: String, transcription: String)
 
+    @Query("UPDATE messages SET transport = :transport WHERE uuid = :uuid")
+    suspend fun updateTransport(uuid: String, transport: Int)
+
     @Query("SELECT * FROM messages WHERE contactId = :contactId ORDER BY createdAt ASC")
     fun getByContact(contactId: String): Flow<List<MessageEntity>>
 

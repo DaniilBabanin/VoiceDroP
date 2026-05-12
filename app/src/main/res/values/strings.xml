@@ -48,4 +48,7 @@
     <string name="state_played">Played</string>
     <string name="state_deleted">Deleted</string>
     <string name="state_failed">Failed</string>
+    <string name="transport_lan">via LAN</string>
+    <string name="transport_p2p">via P2P</string>
+    <string name="transport_relay">via Relay</string>
 </resources>

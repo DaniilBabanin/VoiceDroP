@@ -161,6 +161,7 @@ class VoiceDropService : Service() {
                         contactId = contactId,
                         direction = MessageEntity.DIRECTION_OUTBOUND,
                         state = MessageEntity.STATE_OUTBOX,
+                        transport = MessageEntity.TRANSPORT_UNKNOWN,
                         encryptedFilePath = encFile.absolutePath,
                         durationMs = durationMs,
                         deleteAfterMs = deleteAfterMs,
@@ -172,8 +173,11 @@ class VoiceDropService : Service() {
                     )
                 )
 
-                connectionManager.sendToContact(contactId, wireFrame)
+                val transport = connectionManager.sendToContact(contactId, wireFrame)
                 repository.updateMessageStateSent(uuid.toString(), MessageEntity.STATE_SENT, System.currentTimeMillis())
+                if (transport != MessageEntity.TRANSPORT_UNKNOWN) {
+                    repository.updateTransport(uuid.toString(), transport)
+                }
 
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send message", e)

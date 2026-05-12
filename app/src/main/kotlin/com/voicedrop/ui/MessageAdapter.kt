@@ -34,6 +34,7 @@ class MessageAdapter : ListAdapter<MessageEntity, MessageAdapter.ViewHolder>(DIF
         private val durationText: TextView = view.findViewById(R.id.durationText)
         private val statusText: TextView = view.findViewById(R.id.statusText)
         private val timestampText: TextView = view.findViewById(R.id.timestampText)
+        private val transportText: TextView = view.findViewById(R.id.transportText)
         private val playButton: Button = view.findViewById(R.id.playButton)
 
         fun bind(message: MessageEntity) {
@@ -43,8 +44,16 @@ class MessageAdapter : ListAdapter<MessageEntity, MessageAdapter.ViewHolder>(DIF
             card.layoutParams = lp
 
             durationText.text = formatDuration(message.durationMs)
-            statusText.text = stateLabel(message.state, isOutbound)
+            statusText.text = stateLabel(message.state)
             timestampText.text = formatTimestamp(message.createdAt)
+
+            val transportLabel = transportLabel(message.transport)
+            if (transportLabel != null) {
+                transportText.text = transportLabel
+                transportText.visibility = View.VISIBLE
+            } else {
+                transportText.visibility = View.GONE
+            }
 
             val canPlay = message.encryptedFilePath != null &&
                 message.state != MessageEntity.STATE_DELETED &&
@@ -63,7 +72,7 @@ class MessageAdapter : ListAdapter<MessageEntity, MessageAdapter.ViewHolder>(DIF
             return "%d:%02d".format(totalSecs / 60, totalSecs % 60)
         }
 
-        private fun stateLabel(state: Int, outbound: Boolean): String = when (state) {
+        private fun stateLabel(state: Int): String = when (state) {
             MessageEntity.STATE_OUTBOX -> itemView.context.getString(R.string.state_sending)
             MessageEntity.STATE_SENT -> itemView.context.getString(R.string.state_sent)
             MessageEntity.STATE_DELIVERED -> itemView.context.getString(R.string.state_delivered)
@@ -71,6 +80,13 @@ class MessageAdapter : ListAdapter<MessageEntity, MessageAdapter.ViewHolder>(DIF
             MessageEntity.STATE_DELETED -> itemView.context.getString(R.string.state_deleted)
             MessageEntity.STATE_UNDELIVERABLE -> itemView.context.getString(R.string.state_failed)
             else -> ""
+        }
+
+        private fun transportLabel(transport: Int): String? = when (transport) {
+            MessageEntity.TRANSPORT_LAN -> itemView.context.getString(R.string.transport_lan)
+            MessageEntity.TRANSPORT_P2P -> itemView.context.getString(R.string.transport_p2p)
+            MessageEntity.TRANSPORT_RELAY -> itemView.context.getString(R.string.transport_relay)
+            else -> null
         }
 
         private fun formatTimestamp(createdAt: Long): String {
