@@ -10,5 +10,4 @@
 local.properties
 keystore.jks
 *.jks
-*.keystore
 app/build/
