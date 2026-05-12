@@ -34,7 +34,11 @@ class ContactListActivity : AppCompatActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* results ignored — permissions are best-effort at launch */ }
+    ) { results ->
+        if (results[Manifest.permission.RECORD_AUDIO] == true) {
+            startForegroundService(Intent(this, VoiceDropService::class.java))
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,7 +49,9 @@ class ContactListActivity : AppCompatActivity() {
         repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())
 
         AutoDeleteWorker.schedule(this)
-        startForegroundService(Intent(this, VoiceDropService::class.java))
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            startForegroundService(Intent(this, VoiceDropService::class.java))
+        }
 
         val toolbar = findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar)
         setSupportActionBar(toolbar)

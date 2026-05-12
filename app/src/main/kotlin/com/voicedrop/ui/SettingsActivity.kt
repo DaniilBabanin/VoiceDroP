@@ -13,6 +13,7 @@ import androidx.appcompat.widget.Toolbar
 import com.google.android.gms.oss.licenses.OssLicensesMenuActivity
 import com.voicedrop.R
 import com.voicedrop.crypto.KeyManager
+import com.voicedrop.service.VoiceDropService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -60,6 +61,9 @@ class SettingsActivity : AppCompatActivity() {
                 .putString("signaling_url", url)
                 .apply()
             Toast.makeText(this, getString(R.string.url_saved), Toast.LENGTH_SHORT).show()
+            startService(Intent(this, VoiceDropService::class.java).apply {
+                action = VoiceDropService.ACTION_RELOAD_CONFIG
+            })
         }
 
         findViewById<Button>(R.id.button_open_source_licenses).setOnClickListener {

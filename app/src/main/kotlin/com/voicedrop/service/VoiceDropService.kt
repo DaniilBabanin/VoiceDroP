@@ -36,7 +36,7 @@ class VoiceDropService : Service() {
     private lateinit var notificationHelper: NotificationHelper
     private lateinit var keyManager: KeyManager
     private lateinit var repository: MessageRepository
-    private lateinit var connectionManager: ConnectionManager
+    private lateinit var connectionManager: ConnectionManager  // reassigned on reload
 
     private val audioRecorder = AudioRecorder()
     private val audioPlayer = AudioPlayer()
@@ -66,6 +66,13 @@ class VoiceDropService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            ACTION_RELOAD_CONFIG -> {
+                connectionManager.stop()
+                val prefs = getSharedPreferences("voicedrop_settings", Context.MODE_PRIVATE)
+                val newUrl = prefs.getString("signaling_url", "") ?: ""
+                connectionManager = ConnectionManager(this, repository, keyManager, newUrl)
+                connectionManager.start()
+            }
             ACTION_RECORD_START -> {
                 val contactId = intent.getStringExtra(EXTRA_CONTACT_ID) ?: return START_STICKY
                 startRecording(contactId)
@@ -275,6 +282,7 @@ class VoiceDropService : Service() {
         const val ACTION_RECORD_STOP = "com.voicedrop.ACTION_RECORD_STOP"
         const val ACTION_PLAY = "com.voicedrop.ACTION_PLAY"
         const val ACTION_STOP_PLAY = "com.voicedrop.ACTION_STOP_PLAY"
+        const val ACTION_RELOAD_CONFIG = "com.voicedrop.ACTION_RELOAD_CONFIG"
         const val EXTRA_CONTACT_ID = "contact_id"
         const val EXTRA_UUID = "uuid"
         const val NOTIFICATION_ID_IDLE = 1000
