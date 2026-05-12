@@ -33,17 +33,17 @@ class PeerConnector {
     suspend fun connectDirect(host: String, port: Int): Socket? =
         withContext(Dispatchers.IO) {
             Log.d(TAG, "connectDirect: $host:$port (5s timeout)")
-            val result = withTimeoutOrNull(5_000L) {
-                try {
-                    Socket(host, port)
-                } catch (e: Exception) {
-                    Log.w(TAG, "connectDirect: failed — ${e.javaClass.simpleName}: ${e.message}")
-                    null
-                }
+            try {
+                // Socket(host, port) has no timeout — use connect(addr, ms) so the OS
+                // honours the deadline instead of retrying SYN for ~2 minutes.
+                val socket = Socket()
+                socket.connect(InetSocketAddress(host, port), 5_000)
+                Log.i(TAG, "connectDirect: connected to $host:$port")
+                socket
+            } catch (e: Exception) {
+                Log.w(TAG, "connectDirect: failed — ${e.javaClass.simpleName}: ${e.message}")
+                null
             }
-            if (result != null) Log.i(TAG, "connectDirect: connected to $host:$port")
-            else Log.w(TAG, "connectDirect: timed out for $host:$port")
-            result
         }
 
     suspend fun listenForIncoming(localPort: Int): Socket? =

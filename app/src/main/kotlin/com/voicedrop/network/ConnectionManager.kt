@@ -140,7 +140,7 @@ class ConnectionManager(
         val fp = contactId.take(8)
         val conn = connections[contactId]
         if (conn == null) {
-            Log.d(TAG, "path1 fp=$fp: no existing connection")
+            if (VERBOSE) Log.d(TAG, "path1 fp=$fp: no existing connection")
             return false
         }
         return if (conn.isAlive) {
@@ -154,7 +154,7 @@ class ConnectionManager(
                 false
             }
         } else {
-            Log.d(TAG, "path1 fp=$fp: existing connection not alive")
+            if (VERBOSE) Log.d(TAG, "path1 fp=$fp: existing connection not alive")
             connections.remove(contactId)
             false
         }
@@ -164,7 +164,7 @@ class ConnectionManager(
         val fp = contactId.take(8)
         val peer = lanPeers[contactId]
         if (peer == null) {
-            Log.d(TAG, "path2 fp=$fp: no LAN peer cached")
+            if (VERBOSE) Log.d(TAG, "path2 fp=$fp: no LAN peer cached")
             return false
         }
         Log.i(TAG, "path2 fp=$fp: LAN peer at ${peer.host}:${peer.port}")
@@ -203,21 +203,12 @@ class ConnectionManager(
                                     found = signal
                                     sendClient.disconnect()  // closes channel, ending collect
                                 }
-                                is Signal.OutboxPing -> {
-                                    Log.i(TAG, "path3 fp=$fp: outbox_ping count=${signal.count}")
-                                    sendClient.send(Signal.OutboxReady())
-                                }
-                                is Signal.RelayFrame -> {
-                                    Log.i(TAG, "path3 fp=$fp: relay frame received")
-                                    scope.launch {
-                                        try {
-                                            val bytes = android.util.Base64.decode(signal.data, android.util.Base64.NO_WRAP)
-                                            processFrame(bytes)
-                                        } catch (e: Exception) {
-                                            Log.w(TAG, "path3 fp=$fp: relay frame error — ${e.message}")
-                                        }
-                                    }
-                                }
+                                // Relay delivery is handled exclusively by the presence WS.
+                                // Path3 must NOT respond to outbox_ping: if it sends outbox_ready
+                                // and then disconnects before relay_frame arrives, the DO deletes
+                                // the frame from storage and it is permanently lost.
+                                is Signal.OutboxPing -> Log.d(TAG, "path3 fp=$fp: outbox_ping — skipped (presence handles relay)")
+                                is Signal.RelayFrame -> Log.d(TAG, "path3 fp=$fp: relay_frame — skipped (presence handles relay)")
                                 else -> {}
                             }
                         }
@@ -313,9 +304,9 @@ class ConnectionManager(
             var attempt = 0
             while (attempt < 20) {
                 val delayMs = delays.getOrElse(attempt) { 60_000L }
-                Log.d(TAG, "backoff fp=$fp: attempt $attempt — waiting ${delayMs / 1000}s")
+                if (VERBOSE) Log.d(TAG, "backoff fp=$fp: attempt $attempt — waiting ${delayMs / 1000}s")
                 delay(delayMs)
-                Log.d(TAG, "backoff fp=$fp: attempt $attempt — retrying")
+                if (VERBOSE) Log.d(TAG, "backoff fp=$fp: attempt $attempt — retrying")
                 val flushed = flushOutboxForContact(contactId)
                 if (flushed) {
                     Log.i(TAG, "backoff fp=$fp: outbox flushed on attempt $attempt")
@@ -331,7 +322,7 @@ class ConnectionManager(
         val fp = contactId.take(8)
         val actions = repository.getPendingActionsForContact(contactId)
         if (actions.isEmpty()) {
-            Log.d(TAG, "flush fp=$fp: outbox empty")
+            if (VERBOSE) Log.d(TAG, "flush fp=$fp: outbox empty")
             return true
         }
         Log.i(TAG, "flush fp=$fp: flushing ${actions.size} pending action(s)")
@@ -357,7 +348,7 @@ class ConnectionManager(
     private suspend fun flushAllOutboxes() {
         val actions = repository.getAllPendingActions()
         if (actions.isEmpty()) {
-            Log.d(TAG, "flushAll: nothing pending")
+            if (VERBOSE) Log.d(TAG, "flushAll: nothing pending")
             return
         }
         val byContact = actions.groupBy { it.contactId }
@@ -421,7 +412,7 @@ class ConnectionManager(
         }
 
         val senderFp = frame.copyOfRange(4, 36).joinToString("") { "%02x".format(it) }
-        Log.d(TAG, "processFrame: sender=${senderFp.take(8)}")
+        Log.i(TAG, "processFrame: frame=${frame.size}B sender=${senderFp.take(8)}")
 
         val contact = repository.getContact(senderFp) ?: run {
             Log.w(TAG, "processFrame: unknown sender ${senderFp.take(8)}")
@@ -595,12 +586,12 @@ class ConnectionManager(
                                             client.send(Signal.OutboxReady())
                                         }
                                         is Signal.RelayFrame -> {
-                                            Log.i(TAG, "presence: relay frame fp=${contact.id.take(8)}")
                                             try {
                                                 val bytes = android.util.Base64.decode(signal.data, android.util.Base64.NO_WRAP)
+                                                Log.i(TAG, "presence: relay_frame fp=${contact.id.take(8)} size=${bytes.size}")
                                                 processFrame(bytes)
                                             } catch (e: Exception) {
-                                                Log.w(TAG, "presence: relay frame error — ${e.message}")
+                                                Log.w(TAG, "presence: relay_frame error fp=${contact.id.take(8)} — ${e.message}")
                                             }
                                         }
                                         else -> {}
@@ -610,7 +601,7 @@ class ConnectionManager(
                                 Log.w(TAG, "presence: collect error fp=${contact.id.take(8)}: ${e.message}")
                             }
 
-                            Log.d(TAG, "presence: disconnected fp=${contact.id.take(8)}, reconnecting in ${backoffMs}ms")
+                            if (VERBOSE) Log.d(TAG, "presence: disconnected fp=${contact.id.take(8)}, reconnecting in ${backoffMs}ms")
                             client.disconnect()
                             delay(backoffMs)
                             backoffMs = minOf(backoffMs * 2, 60_000L)
@@ -659,5 +650,7 @@ class ConnectionManager(
 
     companion object {
         private const val TAG = "VoiceDrop/Net"
+        // Set false once end-to-end delivery is confirmed working to reduce logcat noise
+        private const val VERBOSE = true
     }
 }
