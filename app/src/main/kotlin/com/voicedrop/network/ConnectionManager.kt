@@ -615,7 +615,7 @@ class ConnectionManager(
             .removePrefix("wss://")
             .removePrefix("ws://")
             .substringBefore("/")
-        return "$scheme://$host/relay/$recipientFp"
+        return "$scheme://$host/relay/$ownFingerprint/$recipientFp"
     }
 
     private fun deriveRoomKey(fp1: String, fp2: String): String {

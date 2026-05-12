@@ -20,19 +20,27 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // Relay store: POST /relay/{recipientFp}
-    const relayMatch = url.pathname.match(/^\/relay\/([a-f0-9]{64})$/);
+    // Relay store: POST /relay/{senderFp}/{recipientFp}
+    // Routes through the shared DO room so an already-connected recipient
+    // gets an immediate outbox_ping rather than waiting for its next hello.
+    const relayMatch = url.pathname.match(/^\/relay\/([a-f0-9]{64})\/([a-f0-9]{64})$/);
     if (relayMatch && request.method === 'POST') {
-      const recipientFp = relayMatch[1];
+      const senderFp = relayMatch[1];
+      const recipientFp = relayMatch[2];
       const body = await request.arrayBuffer();
       if (body.byteLength === 0) {
         return new Response('Empty body', { status: 400, headers: corsHeaders });
       }
-      const uuid = crypto.randomUUID();
-      await env.RELAY_STORE.put(`frame:${recipientFp}:${uuid}`, body, {
-        expirationTtl: RELAY_TTL_SECONDS,
+      const roomKey = [senderFp, recipientFp].sort().join('');
+      const roomId = env.SIGNALING_ROOM.idFromName(roomKey);
+      const room = env.SIGNALING_ROOM.get(roomId);
+      const doResp = await room.fetch(
+        new Request(`https://internal/relay/${recipientFp}`, { method: 'POST', body })
+      );
+      return new Response(doResp.ok ? 'OK' : 'Error', {
+        status: doResp.status,
+        headers: corsHeaders,
       });
-      return new Response('OK', { status: 200, headers: corsHeaders });
     }
 
     // Signaling WebSocket: GET /signal/{roomKey}
@@ -54,6 +62,30 @@ export class SignalingRoom implements DurableObject {
   constructor(private state: DurableObjectState, private env: Env) {}
 
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    // Relay frame storage forwarded from the main Worker fetch handler.
+    // Stores the frame in KV and immediately notifies the recipient if connected.
+    const relayMatch = url.pathname.match(/^\/relay\/([a-f0-9]{64})$/);
+    if (relayMatch && request.method === 'POST') {
+      const recipientFp = relayMatch[1];
+      const body = await request.arrayBuffer();
+      const uuid = crypto.randomUUID();
+      await this.env.RELAY_STORE.put(`frame:${recipientFp}:${uuid}`, body, {
+        expirationTtl: RELAY_TTL_SECONDS,
+      });
+      const recipient = this.peers.get(recipientFp);
+      if (recipient) {
+        try {
+          const list = await this.env.RELAY_STORE.list({ prefix: `frame:${recipientFp}:` });
+          recipient.ws.send(JSON.stringify({ type: 'outbox_ping', count: list.keys.length }));
+        } catch {
+          // recipient ws already closed
+        }
+      }
+      return new Response('OK', { status: 200 });
+    }
+
     const upgradeHeader = request.headers.get('Upgrade');
     if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
       return new Response('Expected WebSocket', { status: 426 });
