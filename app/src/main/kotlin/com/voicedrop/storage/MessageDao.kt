@@ -39,4 +39,7 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE uuid = :uuid")
     suspend fun getByUuid(uuid: String): MessageEntity?
+
+    @Query("SELECT * FROM messages WHERE contactId = :contactId")
+    suspend fun getByContactList(contactId: String): List<MessageEntity>
 }

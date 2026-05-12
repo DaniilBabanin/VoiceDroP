@@ -41,6 +41,9 @@ class MessageRepository(
 
     suspend fun getMessage(uuid: String): MessageEntity? = messageDao.getByUuid(uuid)
 
+    suspend fun getMessagesForContact(contactId: String): List<MessageEntity> =
+        messageDao.getByContactList(contactId)
+
     suspend fun getScheduledDeletes(now: Long): List<MessageEntity> =
         messageDao.getScheduledDeletes(now)
 

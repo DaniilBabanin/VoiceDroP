@@ -51,4 +51,7 @@
     <string name="transport_lan">via LAN</string>
     <string name="transport_p2p">via P2P</string>
     <string name="transport_relay">via Relay</string>
+    <string name="delete_contact_title">Delete contact</string>
+    <string name="delete_contact_message">Delete \"%s\"? All message history will be permanently erased.</string>
+    <string name="delete">Delete</string>
 </resources>

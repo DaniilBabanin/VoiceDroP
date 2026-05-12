@@ -10,7 +10,9 @@ import android.view.MenuItem
 import android.view.View
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.floatingactionbutton.FloatingActionButton
@@ -18,6 +20,7 @@ import com.voicedrop.R
 import com.voicedrop.service.AutoDeleteWorker
 import com.voicedrop.service.VoiceDropService
 import com.voicedrop.storage.AppDatabase
+import com.voicedrop.storage.ContactEntity
 import com.voicedrop.storage.MessageRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,12 +28,15 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 class ContactListActivity : AppCompatActivity() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var repository: MessageRepository
     private lateinit var adapter: ContactAdapter
+    private lateinit var recyclerView: RecyclerView
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -67,9 +73,10 @@ class ContactListActivity : AppCompatActivity() {
             }
         }
 
-        val recyclerView = findViewById<RecyclerView>(R.id.recycler_contacts)
+        recyclerView = findViewById(R.id.recycler_contacts)
         recyclerView.layoutManager = LinearLayoutManager(this)
         recyclerView.adapter = adapter
+        setupSwipeToDelete()
 
         val emptyState = findViewById<TextView>(R.id.text_empty_state)
         val fab = findViewById<FloatingActionButton>(R.id.fab_add_contact)
@@ -134,6 +141,69 @@ class ContactListActivity : AppCompatActivity() {
                 true
             }
             else -> super.onOptionsItemSelected(item)
+        }
+    }
+
+    private fun setupSwipeToDelete() {
+        val swipeCallback = object : ItemTouchHelper.SimpleCallback(
+            0, ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT
+        ) {
+            override fun onMove(
+                rv: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder
+            ) = false
+
+            override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
+                val position = viewHolder.adapterPosition
+                if (position == RecyclerView.NO_POSITION) return
+                val contact = adapter.currentList[position]
+                showDeleteConfirmation(contact, position)
+            }
+        }
+        ItemTouchHelper(swipeCallback).attachToRecyclerView(recyclerView)
+    }
+
+    private fun showDeleteConfirmation(contact: ContactEntity, position: Int) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.delete_contact_title)
+            .setMessage(getString(R.string.delete_contact_message, contact.name))
+            .setPositiveButton(R.string.delete) { _, _ ->
+                scope.launch { deleteContact(contact) }
+            }
+            .setNegativeButton(android.R.string.cancel) { _, _ ->
+                adapter.notifyItemChanged(position)
+            }
+            .setOnCancelListener { adapter.notifyItemChanged(position) }
+            .show()
+    }
+
+    private suspend fun deleteContact(contact: ContactEntity) {
+        withContext(Dispatchers.IO) {
+            val messages = repository.getMessagesForContact(contact.id)
+            for (message in messages) {
+                message.encryptedFilePath?.let { secureDelete(File(it)) }
+            }
+            File(filesDir, "messages/${contact.id}").listFiles()?.forEach { secureDelete(it) }
+        }
+        repository.deleteContact(contact)
+    }
+
+    private fun secureDelete(file: File) {
+        if (!file.exists()) return
+        try {
+            val length = file.length()
+            if (length > 0) {
+                file.outputStream().use { out ->
+                    val zeros = ByteArray(minOf(length, 65536).toInt())
+                    var remaining = length
+                    while (remaining > 0) {
+                        val toWrite = minOf(remaining, zeros.size.toLong()).toInt()
+                        out.write(zeros, 0, toWrite)
+                        remaining -= toWrite
+                    }
+                }
+            }
+        } finally {
+            file.delete()
         }
     }
 

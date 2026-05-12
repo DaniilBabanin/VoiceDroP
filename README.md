@@ -158,7 +158,6 @@ Phone A                 Cloudflare Worker          Phone B
 - **STUN hole-punch**: Falls back to outbox queue if direct TCP fails; STUN integration completes in v1.0.0
 - **AndroidKeyStore wrapping**: Session key stored directly in SharedPreferences in v0.1.0; hardware-backed wrapping in v1.0.0
 - **No delete contact UI**: Contacts can't be removed from the UI in v0.1.0
-- **Screen security**: FLAG_SECURE (screenshot prevention) added in v1.0.0
 
 ---
 
@@ -172,8 +171,7 @@ Phone A                 Cloudflare Worker          Phone B
 | 4 | AndroidKeyStore session key wrapping | v1.0.0 |
 | 5 | Delete contact UI | v1.0.0 |
 | 6 | Per-contact auto-delete setting | v1.0.0 |
-| 7 | FLAG_SECURE on all activities | v1.0.0 |
-| 8 | Release APK signing (production keystore) | v1.0.0 |
+| 7 | Release APK signing (production keystore) | v1.0.0 |
 | 9 | Fix bugs found in v0.1.0 testing | v1.0.0 |
 
 ---
