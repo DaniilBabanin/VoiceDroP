@@ -193,13 +193,35 @@ class ConnectionManager(
         val peerHello: Signal.PeerHello? = try {
             coroutineScope {
                 val sendClient = SignalingClient(workerUrl, ownFingerprint)
-                // Start collecting BEFORE connecting to avoid race with fast server responses
+                // Collect ALL signals: respond to outbox_ping/relay_frame, terminate on peer_hello
                 val collector = async {
                     withTimeoutOrNull(15_000L) {
-                        sendClient.signals
-                            .filterIsInstance<Signal.PeerHello>()
-                            .filter { it.fingerprint == contactId }
-                            .firstOrNull()
+                        var found: Signal.PeerHello? = null
+                        sendClient.signals.collect { signal ->
+                            when (signal) {
+                                is Signal.PeerHello -> if (signal.fingerprint == contactId) {
+                                    found = signal
+                                    sendClient.disconnect()  // closes channel, ending collect
+                                }
+                                is Signal.OutboxPing -> {
+                                    Log.i(TAG, "path3 fp=$fp: outbox_ping count=${signal.count}")
+                                    sendClient.send(Signal.OutboxReady())
+                                }
+                                is Signal.RelayFrame -> {
+                                    Log.i(TAG, "path3 fp=$fp: relay frame received")
+                                    scope.launch {
+                                        try {
+                                            val bytes = android.util.Base64.decode(signal.data, android.util.Base64.NO_WRAP)
+                                            processFrame(bytes)
+                                        } catch (e: Exception) {
+                                            Log.w(TAG, "path3 fp=$fp: relay frame error — ${e.message}")
+                                        }
+                                    }
+                                }
+                                else -> {}
+                            }
+                        }
+                        found
                     }
                 }
                 val connected = sendClient.connect(roomKey, ourStunStr)
@@ -520,72 +542,84 @@ class ConnectionManager(
     private suspend fun startSignalingPresence() {
         Log.i(TAG, "presence: starting (workerUrl=${workerUrl.take(40)})")
 
-        val contacts = try {
-            repository.getAllContacts().first()
-        } catch (e: Exception) {
-            Log.w(TAG, "presence: failed to load contacts — ${e.message}")
-            return
-        }
+        // Watch the contacts Flow so new contacts get a presence connection immediately after pairing
+        val presenceJobs = mutableMapOf<String, Job>()
+        try {
+            repository.getAllContacts().collect { contacts ->
+                val currentIds = contacts.map { it.id }.toSet()
 
-        if (contacts.isEmpty()) {
-            Log.d(TAG, "presence: no contacts, skipping")
-            return
-        }
-
-        Log.i(TAG, "presence: maintaining ${contacts.size} room(s)")
-
-        for (contact in contacts) {
-            val roomKey = deriveRoomKey(ownFingerprint, contact.id)
-            scope.launch {
-                var backoffMs = 3_000L
-                while (true) {
-                    val stunResult = stunClient.getPublicAddress()
-                    val addr = "${stunResult?.address?.hostAddress ?: "0.0.0.0"}:$listenPort"
-                    Log.i(TAG, "presence: connecting fp=${contact.id.take(8)} addr=$addr")
-
-                    val client = SignalingClient(workerUrl, ownFingerprint)
-                    signalingClients[contact.id] = client
-                    client.connect(roomKey, addr)
-
-                    try {
-                        client.signals.collect { signal ->
-                            when (signal) {
-                                is Signal.PeerHello -> {
-                                    Log.i(TAG, "presence: fp=${contact.id.take(8)} appeared at ${signal.stunAddr}")
-                                    backoffMs = 3_000L
-                                    val pending = repository.getPendingActionsForContact(contact.id)
-                                    if (pending.isNotEmpty()) {
-                                        Log.d(TAG, "presence: flushing ${pending.size} pending action(s) for fp=${contact.id.take(8)}")
-                                        flushOutboxForContact(contact.id)
-                                    }
-                                }
-                                is Signal.Presence -> Log.d(TAG, "presence: peer fp=${contact.id.take(8)} online=${signal.online}")
-                                is Signal.OutboxPing -> {
-                                    Log.i(TAG, "presence: outbox_ping fp=${contact.id.take(8)} count=${signal.count}")
-                                    client.send(Signal.OutboxReady())
-                                }
-                                is Signal.RelayFrame -> {
-                                    Log.i(TAG, "presence: relay frame fp=${contact.id.take(8)}")
-                                    try {
-                                        val bytes = android.util.Base64.decode(signal.data, android.util.Base64.NO_WRAP)
-                                        processFrame(bytes)
-                                    } catch (e: Exception) {
-                                        Log.w(TAG, "presence: relay frame error — ${e.message}")
-                                    }
-                                }
-                                else -> {}
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "presence: collect error fp=${contact.id.take(8)}: ${e.message}")
+                // Cancel connections for contacts that were removed
+                presenceJobs.keys.toList().forEach { id ->
+                    if (id !in currentIds) {
+                        presenceJobs.remove(id)?.cancel()
+                        signalingClients.remove(id)?.disconnect()
                     }
+                }
 
-                    Log.d(TAG, "presence: disconnected fp=${contact.id.take(8)}, reconnecting in ${backoffMs}ms")
-                    client.disconnect()
-                    delay(backoffMs)
-                    backoffMs = minOf(backoffMs * 2, 60_000L)
+                if (contacts.isEmpty()) {
+                    Log.d(TAG, "presence: no contacts")
+                    return@collect
+                }
+
+                // Start presence loops for newly added contacts
+                for (contact in contacts) {
+                    if (contact.id in presenceJobs) continue
+                    val roomKey = deriveRoomKey(ownFingerprint, contact.id)
+                    Log.i(TAG, "presence: maintaining ${presenceJobs.size + 1} room(s)")
+                    presenceJobs[contact.id] = scope.launch {
+                        var backoffMs = 3_000L
+                        while (true) {
+                            val stunResult = stunClient.getPublicAddress()
+                            val addr = "${stunResult?.address?.hostAddress ?: "0.0.0.0"}:$listenPort"
+                            Log.i(TAG, "presence: connecting fp=${contact.id.take(8)} addr=$addr")
+
+                            val client = SignalingClient(workerUrl, ownFingerprint)
+                            signalingClients[contact.id] = client
+                            client.connect(roomKey, addr)
+
+                            try {
+                                client.signals.collect { signal ->
+                                    when (signal) {
+                                        is Signal.PeerHello -> {
+                                            Log.i(TAG, "presence: fp=${contact.id.take(8)} appeared at ${signal.stunAddr}")
+                                            backoffMs = 3_000L
+                                            val pending = repository.getPendingActionsForContact(contact.id)
+                                            if (pending.isNotEmpty()) {
+                                                Log.d(TAG, "presence: flushing ${pending.size} pending action(s) for fp=${contact.id.take(8)}")
+                                                flushOutboxForContact(contact.id)
+                                            }
+                                        }
+                                        is Signal.Presence -> Log.d(TAG, "presence: peer fp=${contact.id.take(8)} online=${signal.online}")
+                                        is Signal.OutboxPing -> {
+                                            Log.i(TAG, "presence: outbox_ping fp=${contact.id.take(8)} count=${signal.count}")
+                                            client.send(Signal.OutboxReady())
+                                        }
+                                        is Signal.RelayFrame -> {
+                                            Log.i(TAG, "presence: relay frame fp=${contact.id.take(8)}")
+                                            try {
+                                                val bytes = android.util.Base64.decode(signal.data, android.util.Base64.NO_WRAP)
+                                                processFrame(bytes)
+                                            } catch (e: Exception) {
+                                                Log.w(TAG, "presence: relay frame error — ${e.message}")
+                                            }
+                                        }
+                                        else -> {}
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "presence: collect error fp=${contact.id.take(8)}: ${e.message}")
+                            }
+
+                            Log.d(TAG, "presence: disconnected fp=${contact.id.take(8)}, reconnecting in ${backoffMs}ms")
+                            client.disconnect()
+                            delay(backoffMs)
+                            backoffMs = minOf(backoffMs * 2, 60_000L)
+                        }
+                    }
                 }
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "presence: contacts flow error — ${e.message}")
         }
     }
 
