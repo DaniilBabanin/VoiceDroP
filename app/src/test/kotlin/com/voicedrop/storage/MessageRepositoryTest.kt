@@ -49,6 +49,7 @@ class MessageRepositoryTest {
             contactId = contactId,
             direction = direction,
             state = MessageEntity.STATE_OUTBOX,
+            transport = MessageEntity.TRANSPORT_UNKNOWN,
             encryptedFilePath = null,
             durationMs = 0,
             deleteAfterMs = 0L,
