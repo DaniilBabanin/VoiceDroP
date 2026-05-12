@@ -5,6 +5,9 @@ on:
     tags:
       - 'v[1-9]*.*.*'   # Production releases only (v1.x.x and above); v0.x.x handled by prerelease.yml
 
+permissions:
+  contents: write
+
 jobs:
   release:
     name: Build and Release
