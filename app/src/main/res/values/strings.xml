@@ -54,4 +54,14 @@
     <string name="delete_contact_title">Delete contact</string>
     <string name="delete_contact_message">Delete \"%s\"? All message history will be permanently erased.</string>
     <string name="delete">Delete</string>
+    <string name="auto_delete">Auto-delete messages</string>
+    <string name="auto_delete_none">None</string>
+    <plurals name="hours">
+        <item quantity="one">%d hour</item>
+        <item quantity="other">%d hours</item>
+    </plurals>
+    <plurals name="days">
+        <item quantity="one">%d day</item>
+        <item quantity="other">%d days</item>
+    </plurals>
 </resources>
