@@ -57,7 +57,14 @@ class ContactListActivity : AppCompatActivity() {
         setSupportActionBar(toolbar)
 
         adapter = ContactAdapter { contactId ->
-            // Show messages for selected contact
+            scope.launch {
+                val contact = repository.getContact(contactId) ?: return@launch
+                val intent = Intent(this@ContactListActivity, MessageHistoryActivity::class.java).apply {
+                    putExtra(MessageHistoryActivity.EXTRA_CONTACT_ID, contactId)
+                    putExtra(MessageHistoryActivity.EXTRA_CONTACT_NAME, contact.name)
+                }
+                startActivity(intent)
+            }
         }
 
         val recyclerView = findViewById<RecyclerView>(R.id.recycler_contacts)

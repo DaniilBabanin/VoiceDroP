@@ -51,6 +51,11 @@
         </activity>
 
         <activity
+            android:name=".ui.MessageHistoryActivity"
+            android:exported="false"
+            android:parentActivityName=".ui.ContactListActivity"/>
+
+        <activity
             android:name=".ui.SettingsActivity"
             android:exported="false"/>
 

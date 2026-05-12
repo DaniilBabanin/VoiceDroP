@@ -17,9 +17,16 @@
         android:maxWidth="280dp">
 
         <TextView
+            android:id="@+id/durationText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceBody2"/>
+
+        <TextView
             android:id="@+id/statusText"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
             android:textAppearance="?attr/textAppearanceCaption"
             android:alpha="0.6"/>
 
@@ -27,7 +34,7 @@
             android:id="@+id/timestampText"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
+            android:layout_marginTop="2dp"
             android:textAppearance="?attr/textAppearanceCaption"
             android:alpha="0.6"/>
 
@@ -35,7 +42,7 @@
             android:id="@+id/playButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
+            android:layout_marginTop="6dp"
             style="?attr/materialButtonOutlinedStyle"
             android:text="@string/play"/>
 

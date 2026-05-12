@@ -41,4 +41,11 @@
     <string name="url_saved">URL saved</string>
     <string name="permission_denied">Permission denied</string>
     <string name="open_source_licenses">Open Source Licenses</string>
+    <string name="empty_messages">No messages yet.\nRecord a voice drop to get started.</string>
+    <string name="state_sending">Sending…</string>
+    <string name="state_sent">Sent</string>
+    <string name="state_delivered">Delivered</string>
+    <string name="state_played">Played</string>
+    <string name="state_deleted">Deleted</string>
+    <string name="state_failed">Failed</string>
 </resources>
