@@ -31,6 +31,9 @@ sealed class Signal {
 
     @Serializable
     data class OutboxReady(val type: String = "outbox_ready") : Signal()
+
+    @Serializable
+    data class RelayFrame(val type: String = "relay_frame", val data: String) : Signal()
 }
 
 class SignalingClient(
@@ -96,6 +99,7 @@ class SignalingClient(
             is Signal.Presence -> json.encodeToString<Signal.Presence>(signal)
             is Signal.OutboxPing -> json.encodeToString<Signal.OutboxPing>(signal)
             is Signal.OutboxReady -> json.encodeToString<Signal.OutboxReady>(signal)
+            is Signal.RelayFrame -> json.encodeToString<Signal.RelayFrame>(signal)
         }
         val sent = webSocket?.send(text)
         Log.d(TAG, "send: ${signal.javaClass.simpleName} sent=$sent")
@@ -115,6 +119,7 @@ class SignalingClient(
                 "presence"   -> json.decodeFromString<Signal.Presence>(text)
                 "outbox_ping" -> json.decodeFromString<Signal.OutboxPing>(text)
                 "outbox_ready" -> json.decodeFromString<Signal.OutboxReady>(text)
+                "relay_frame"  -> json.decodeFromString<Signal.RelayFrame>(text)
                 else -> null
             }
         } catch (e: Exception) {

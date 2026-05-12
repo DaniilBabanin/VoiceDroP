@@ -9,3 +9,7 @@ class_name = "SignalingRoom"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SignalingRoom"]
+
+[[kv_namespaces]]
+binding = "RELAY_STORE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"

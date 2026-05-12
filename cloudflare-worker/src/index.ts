@@ -2,7 +2,10 @@ import { Signal, PeerState } from './types';
 
 export interface Env {
   SIGNALING_ROOM: DurableObjectNamespace;
+  RELAY_STORE: KVNamespace;
 }
+
+const RELAY_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -17,12 +20,28 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    const match = url.pathname.match(/^\/signal\/([a-f0-9]+)$/);
-    if (!match) {
+    // Relay store: POST /relay/{recipientFp}
+    const relayMatch = url.pathname.match(/^\/relay\/([a-f0-9]{64})$/);
+    if (relayMatch && request.method === 'POST') {
+      const recipientFp = relayMatch[1];
+      const body = await request.arrayBuffer();
+      if (body.byteLength === 0) {
+        return new Response('Empty body', { status: 400, headers: corsHeaders });
+      }
+      const uuid = crypto.randomUUID();
+      await env.RELAY_STORE.put(`frame:${recipientFp}:${uuid}`, body, {
+        expirationTtl: RELAY_TTL_SECONDS,
+      });
+      return new Response('OK', { status: 200, headers: corsHeaders });
+    }
+
+    // Signaling WebSocket: GET /signal/{roomKey}
+    const signalMatch = url.pathname.match(/^\/signal\/([a-f0-9]+)$/);
+    if (!signalMatch) {
       return new Response('Not Found', { status: 404, headers: corsHeaders });
     }
 
-    const roomKey = match[1];
+    const roomKey = signalMatch[1];
     const roomId = env.SIGNALING_ROOM.idFromName(roomKey);
     const room = env.SIGNALING_ROOM.get(roomId);
     return room.fetch(request);
@@ -43,8 +62,8 @@ export class SignalingRoom implements DurableObject {
     const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
     server.accept();
 
-    server.addEventListener('message', (event) => {
-      this.handleMessage(server, event.data as string);
+    server.addEventListener('message', async (event) => {
+      await this.handleMessage(server, event.data as string);
     });
 
     server.addEventListener('close', () => {
@@ -58,7 +77,7 @@ export class SignalingRoom implements DurableObject {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private handleMessage(ws: WebSocket, text: string): void {
+  private async handleMessage(ws: WebSocket, text: string): Promise<void> {
     let signal: Signal;
     try {
       signal = JSON.parse(text) as Signal;
@@ -66,30 +85,59 @@ export class SignalingRoom implements DurableObject {
       return;
     }
 
-    if (signal.type !== 'hello') return;
+    if (signal.type === 'hello') {
+      const { fingerprint, stunAddr } = signal;
+      this.peers.set(fingerprint, { ws, fingerprint, stunAddr });
 
-    const { fingerprint, stunAddr } = signal;
-    const peerState: PeerState = { ws, fingerprint, stunAddr };
-    this.peers.set(fingerprint, peerState);
+      this.broadcastPresence(fingerprint, true);
 
-    this.broadcastPresence(fingerprint, true);
-
-    for (const [fp, peer] of this.peers) {
-      if (fp !== fingerprint && peer.ws !== ws) {
-        const peerHelloToNew: Signal = {
-          type: 'peer_hello',
-          fingerprint: fp,
-          stunAddr: peer.stunAddr,
-        };
-        ws.send(JSON.stringify(peerHelloToNew));
-
-        const peerHelloToExisting: Signal = {
-          type: 'peer_hello',
-          fingerprint,
-          stunAddr,
-        };
-        peer.ws.send(JSON.stringify(peerHelloToExisting));
+      for (const [fp, peer] of this.peers) {
+        if (fp !== fingerprint && peer.ws !== ws) {
+          ws.send(JSON.stringify({ type: 'peer_hello', fingerprint: fp, stunAddr: peer.stunAddr }));
+          try {
+            peer.ws.send(JSON.stringify({ type: 'peer_hello', fingerprint, stunAddr }));
+          } catch {
+            // peer socket already closed
+          }
+        }
       }
+
+      // Notify peer of any queued relay frames
+      try {
+        const list = await this.env.RELAY_STORE.list({ prefix: `frame:${fingerprint}:` });
+        if (list.keys.length > 0) {
+          ws.send(JSON.stringify({ type: 'outbox_ping', count: list.keys.length }));
+        }
+      } catch {
+        // KV unavailable — skip
+      }
+      return;
+    }
+
+    if (signal.type === 'outbox_ready') {
+      let senderFp: string | undefined;
+      for (const [fp, peer] of this.peers) {
+        if (peer.ws === ws) { senderFp = fp; break; }
+      }
+      if (!senderFp) return;
+
+      try {
+        const list = await this.env.RELAY_STORE.list({ prefix: `frame:${senderFp}:` });
+        for (const key of list.keys) {
+          const data = await this.env.RELAY_STORE.get(key.name, 'arrayBuffer');
+          if (!data) continue;
+          const bytes = new Uint8Array(data);
+          let binary = '';
+          for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          ws.send(JSON.stringify({ type: 'relay_frame', data: btoa(binary) }));
+          await this.env.RELAY_STORE.delete(key.name);
+        }
+      } catch {
+        // KV error — ignore
+      }
+      return;
     }
   }
 
@@ -109,8 +157,7 @@ export class SignalingRoom implements DurableObject {
   }
 
   private broadcastPresence(excludeFp: string, online: boolean): void {
-    const presence: Signal = { type: 'presence', online };
-    const msg = JSON.stringify(presence);
+    const msg = JSON.stringify({ type: 'presence', online });
     for (const [fp, peer] of this.peers) {
       if (fp !== excludeFp) {
         try {

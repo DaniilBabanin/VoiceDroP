@@ -32,12 +32,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.TimeUnit
 
 class ConnectionManager(
     private val context: Context,
@@ -49,6 +54,10 @@ class ConnectionManager(
     private val notificationHelper = NotificationHelper(context)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .build()
     private val connections = mutableMapOf<String, PeerConnection>()
     private val mutexes = mutableMapOf<String, Mutex>()
     private val backoffJobs = mutableMapOf<String, Job>()
@@ -115,6 +124,7 @@ class ConnectionManager(
             val sent = tryExistingConnection(contactId, frame)
                 || tryLanConnect(contactId, frame)
                 || tryStunConnect(contactId, frame)
+                || tryRelayUpload(contactId, frame)
 
             if (sent) {
                 Log.i(TAG, "sendToContact fp=$fp: delivered")
@@ -195,12 +205,6 @@ class ConnectionManager(
                 val connected = sendClient.connect(roomKey, ourStunStr)
                 val hello = if (connected) collector.await() else null
                 sendClient.disconnect()
-
-                // Re-register our presence after the send client disconnects
-                signalingClients[contactId]?.send(
-                    Signal.Hello(fingerprint = ownFingerprint, stunAddr = ourStunStr)
-                )
-
                 hello
             }
         } catch (e: Exception) {
@@ -314,6 +318,7 @@ class ConnectionManager(
             val sent = tryExistingConnection(contactId, action.payload)
                 || tryLanConnect(contactId, action.payload)
                 || tryStunConnect(contactId, action.payload)
+                || tryRelayUpload(contactId, action.payload)
 
             if (sent) {
                 repository.deletePendingAction(action.id)
@@ -555,6 +560,19 @@ class ConnectionManager(
                                     }
                                 }
                                 is Signal.Presence -> Log.d(TAG, "presence: peer fp=${contact.id.take(8)} online=${signal.online}")
+                                is Signal.OutboxPing -> {
+                                    Log.i(TAG, "presence: outbox_ping fp=${contact.id.take(8)} count=${signal.count}")
+                                    client.send(Signal.OutboxReady())
+                                }
+                                is Signal.RelayFrame -> {
+                                    Log.i(TAG, "presence: relay frame fp=${contact.id.take(8)}")
+                                    try {
+                                        val bytes = android.util.Base64.decode(signal.data, android.util.Base64.NO_WRAP)
+                                        processFrame(bytes)
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "presence: relay frame error — ${e.message}")
+                                    }
+                                }
                                 else -> {}
                             }
                         }
@@ -569,6 +587,35 @@ class ConnectionManager(
                 }
             }
         }
+    }
+
+    private suspend fun tryRelayUpload(contactId: String, frame: ByteArray): Boolean {
+        val fp = contactId.take(8)
+        if (workerUrl.isBlank()) return false
+        val url = deriveRelayUrl(contactId)
+        Log.d(TAG, "relay fp=$fp: uploading ${frame.size} bytes")
+        return try {
+            val body = frame.toRequestBody("application/octet-stream".toMediaTypeOrNull())
+            val request = Request.Builder().url(url).post(body).build()
+            httpClient.newCall(request).execute().use { response ->
+                response.isSuccessful.also {
+                    if (it) Log.i(TAG, "relay fp=$fp: uploaded")
+                    else Log.w(TAG, "relay fp=$fp: upload failed ${response.code}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "relay fp=$fp: upload error — ${e.message}")
+            false
+        }
+    }
+
+    private fun deriveRelayUrl(recipientFp: String): String {
+        val scheme = if (workerUrl.startsWith("wss://")) "https" else "http"
+        val host = workerUrl
+            .removePrefix("wss://")
+            .removePrefix("ws://")
+            .substringBefore("/")
+        return "$scheme://$host/relay/$recipientFp"
     }
 
     private fun deriveRoomKey(fp1: String, fp2: String): String {

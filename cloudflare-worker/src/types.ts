@@ -3,7 +3,8 @@ export type Signal =
   | { type: 'peer_hello'; fingerprint: string; stunAddr: string }
   | { type: 'presence'; online: boolean }
   | { type: 'outbox_ping'; count: number }
-  | { type: 'outbox_ready' };
+  | { type: 'outbox_ready' }
+  | { type: 'relay_frame'; data: string };
 
 export interface PeerState {
   ws: WebSocket;
