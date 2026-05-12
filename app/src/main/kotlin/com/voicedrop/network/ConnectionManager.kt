@@ -32,6 +32,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -583,7 +587,7 @@ class ConnectionManager(
                                         is Signal.Presence -> Log.d(TAG, "presence: peer fp=${contact.id.take(8)} online=${signal.online}")
                                         is Signal.OutboxPing -> {
                                             Log.i(TAG, "presence: outbox_ping fp=${contact.id.take(8)} count=${signal.count}")
-                                            client.send(Signal.OutboxReady())
+                                            pullAndDeliverRelay(contact.id, roomKey)
                                         }
                                         is Signal.RelayFrame -> {
                                             try {
@@ -612,6 +616,46 @@ class ConnectionManager(
         } catch (e: Exception) {
             Log.w(TAG, "presence: contacts flow error — ${e.message}")
         }
+    }
+
+    private suspend fun pullAndDeliverRelay(contactId: String, roomKey: String) {
+        val fp = contactId.take(8)
+        if (workerUrl.isBlank()) return
+        try {
+            val url = derivePullUrl(roomKey)
+            val request = Request.Builder().url(url).get().build()
+            val responseBody = httpClient.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    Log.w(TAG, "presence: pull failed fp=$fp code=${resp.code}")
+                    return
+                }
+                resp.body?.string() ?: return
+            }
+            val obj = Json.parseToJsonElement(responseBody) as? JsonObject ?: return
+            val frames = obj["frames"]?.jsonArray ?: return
+            Log.i(TAG, "presence: pull fp=$fp — ${frames.size} frame(s)")
+            for (frameEl in frames) {
+                try {
+                    val base64 = frameEl.jsonPrimitive.content
+                    val bytes = android.util.Base64.decode(base64, android.util.Base64.NO_WRAP)
+                    Log.i(TAG, "presence: relay_frame fp=$fp size=${bytes.size}")
+                    processFrame(bytes)
+                } catch (e: Exception) {
+                    Log.w(TAG, "presence: relay_frame error fp=$fp — ${e.message}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "presence: pull error fp=$fp — ${e.message}")
+        }
+    }
+
+    private fun derivePullUrl(roomKey: String): String {
+        val scheme = if (workerUrl.startsWith("wss://")) "https" else "http"
+        val host = workerUrl
+            .removePrefix("wss://")
+            .removePrefix("ws://")
+            .substringBefore("/")
+        return "$scheme://$host/pull/$roomKey/$ownFingerprint"
     }
 
     private suspend fun tryRelayUpload(contactId: String, frame: ByteArray): Boolean {

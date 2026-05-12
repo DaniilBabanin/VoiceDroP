@@ -39,6 +39,24 @@ export default {
       });
     }
 
+    // Relay pull: GET /pull/{roomKey}/{recipientFp}
+    // Client calls this after receiving outbox_ping — returns all pending frames and deletes them.
+    // Using HTTP avoids the ws.send() flush issue in non-hibernation DO async WS handlers.
+    const pullMatch = url.pathname.match(/^\/pull\/([a-f0-9]+)\/([a-f0-9]{64})$/);
+    if (pullMatch && request.method === 'GET') {
+      const [, pullRoomKey, recipientFp] = pullMatch;
+      const pullRoomId = env.SIGNALING_ROOM.idFromName(pullRoomKey);
+      const pullRoom = env.SIGNALING_ROOM.get(pullRoomId);
+      const doResp = await pullRoom.fetch(
+        new Request(`https://internal/pull/${recipientFp}`, { method: 'GET' })
+      );
+      const body = await doResp.text();
+      return new Response(body, {
+        status: doResp.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     // Signaling WebSocket: GET /signal/{roomKey}
     const signalMatch = url.pathname.match(/^\/signal\/([a-f0-9]+)$/);
     if (!signalMatch) {
@@ -93,6 +111,25 @@ export class SignalingRoom implements DurableObject {
         console.log(`relay stored but recipient fp=${recipientFp.slice(0, 8)} not connected`);
       }
       return new Response('OK', { status: 200 });
+    }
+
+    // Relay pull: return and delete all pending frames for this recipient.
+    const pullMatch = url.pathname.match(/^\/pull\/([a-f0-9]{64})$/);
+    if (pullMatch && request.method === 'GET') {
+      const recipientFp = pullMatch[1];
+      try {
+        const pending = await this.state.storage.list({ prefix: `relay:${recipientFp}:` });
+        const frames: string[] = [];
+        for (const [key, data] of pending) {
+          frames.push(data as string);
+          await this.state.storage.delete(key);
+        }
+        console.log(`pull: delivered ${frames.length} frame(s) for fp=${recipientFp.slice(0, 8)}`);
+        return new Response(JSON.stringify({ frames }), { status: 200 });
+      } catch (e) {
+        console.log(`pull error: ${e}`);
+        return new Response('Error', { status: 500 });
+      }
     }
 
     const upgradeHeader = request.headers.get('Upgrade');
