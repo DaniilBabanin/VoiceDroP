@@ -78,12 +78,12 @@ class SignalingClient(
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
                 Log.i(TAG, "onClosed: code=$code")
-                signalChannel.trySend(Signal.Presence(online = false))
+                signalChannel.close()
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 Log.w(TAG, "onFailure: ${t.javaClass.simpleName}: ${t.message}")
-                signalChannel.trySend(Signal.Presence(online = false))
+                signalChannel.close()
             }
         })
         return true

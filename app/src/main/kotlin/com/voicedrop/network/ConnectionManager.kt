@@ -188,7 +188,7 @@ class ConnectionManager(
                         sendClient.signals
                             .filterIsInstance<Signal.PeerHello>()
                             .filter { it.fingerprint == contactId }
-                            .first()
+                            .firstOrNull()
                     }
                 }
                 val connected = sendClient.connect(roomKey, ourStunStr)
@@ -491,15 +491,7 @@ class ConnectionManager(
 
     private suspend fun startLanDiscovery() {
         Log.i(TAG, "startLanDiscovery: registering _voicedrop._tcp on port $listenPort")
-        val contacts = try {
-            repository.getAllContacts().first()
-        } catch (e: Exception) {
-            Log.w(TAG, "startLanDiscovery: failed to load contacts — ${e.message}")
-            emptyList()
-        }
-        val contactFingerprints = contacts.map { it.id }.toSet()
-
-        lanDiscovery = LanDiscovery(context, ownFingerprint, contactFingerprints)
+        lanDiscovery = LanDiscovery(context, ownFingerprint)
         lanDiscovery?.start(listenPort)
         lanDiscovery?.discoveredPeers?.collect { peer ->
             Log.i(TAG, "LAN: fp=${peer.fingerprint.take(8)} at ${peer.host}:${peer.port}")
@@ -522,10 +514,6 @@ class ConnectionManager(
     private suspend fun startSignalingPresence() {
         Log.i(TAG, "presence: starting (workerUrl=${workerUrl.take(40)})")
 
-        val stunResult = stunClient.getPublicAddress()
-        val ourIp = stunResult?.address?.hostAddress ?: "0.0.0.0"
-        val ourStunStr = "$ourIp:$listenPort"
-
         val contacts = try {
             repository.getAllContacts().first()
         } catch (e: Exception) {
@@ -538,34 +526,46 @@ class ConnectionManager(
             return
         }
 
-        Log.i(TAG, "presence: connecting to ${contacts.size} room(s), ourAddr=$ourStunStr")
+        Log.i(TAG, "presence: maintaining ${contacts.size} room(s)")
 
         for (contact in contacts) {
             val roomKey = deriveRoomKey(ownFingerprint, contact.id)
-            val client = SignalingClient(workerUrl, ownFingerprint)
-            client.connect(roomKey, ourStunStr)
-            signalingClients[contact.id] = client
-            Log.d(TAG, "presence: joined room for fp=${contact.id.take(8)}")
-
             scope.launch {
-                client.signals.collect { signal ->
-                    when (signal) {
-                        is Signal.PeerHello -> {
-                            Log.i(TAG, "presence: fp=${contact.id.take(8)} appeared at ${signal.stunAddr}")
-                            // Peer is online; if we have pending messages, flush them
-                            val pending = repository.getPendingActionsForContact(contact.id)
-                            if (pending.isNotEmpty()) {
-                                Log.d(TAG, "presence: flushing ${pending.size} pending action(s) for fp=${contact.id.take(8)}")
-                                flushOutboxForContact(contact.id)
+                var backoffMs = 3_000L
+                while (true) {
+                    val stunResult = stunClient.getPublicAddress()
+                    val addr = "${stunResult?.address?.hostAddress ?: "0.0.0.0"}:$listenPort"
+                    Log.i(TAG, "presence: connecting fp=${contact.id.take(8)} addr=$addr")
+
+                    val client = SignalingClient(workerUrl, ownFingerprint)
+                    signalingClients[contact.id] = client
+                    client.connect(roomKey, addr)
+
+                    try {
+                        client.signals.collect { signal ->
+                            when (signal) {
+                                is Signal.PeerHello -> {
+                                    Log.i(TAG, "presence: fp=${contact.id.take(8)} appeared at ${signal.stunAddr}")
+                                    backoffMs = 3_000L
+                                    val pending = repository.getPendingActionsForContact(contact.id)
+                                    if (pending.isNotEmpty()) {
+                                        Log.d(TAG, "presence: flushing ${pending.size} pending action(s) for fp=${contact.id.take(8)}")
+                                        flushOutboxForContact(contact.id)
+                                    }
+                                }
+                                is Signal.Presence -> Log.d(TAG, "presence: peer fp=${contact.id.take(8)} online=${signal.online}")
+                                else -> {}
                             }
                         }
-                        is Signal.Presence -> {
-                            Log.d(TAG, "presence: fp=${contact.id.take(8)} online=${signal.online}")
-                        }
-                        else -> {}
+                    } catch (e: Exception) {
+                        Log.w(TAG, "presence: collect error fp=${contact.id.take(8)}: ${e.message}")
                     }
+
+                    Log.d(TAG, "presence: disconnected fp=${contact.id.take(8)}, reconnecting in ${backoffMs}ms")
+                    client.disconnect()
+                    delay(backoffMs)
+                    backoffMs = minOf(backoffMs * 2, 60_000L)
                 }
-                Log.d(TAG, "presence: signal flow ended for fp=${contact.id.take(8)}")
             }
         }
     }

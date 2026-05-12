@@ -13,8 +13,7 @@ data class LanPeer(val fingerprint: String, val host: String, val port: Int)
 
 class LanDiscovery(
     private val context: Context,
-    private val ownFingerprint: String,
-    private val contactFingerprints: Set<String>
+    private val ownFingerprint: String
 ) {
 
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
@@ -98,11 +97,7 @@ class LanDiscovery(
                     Log.d(TAG, "NSD ignoring own service")
                     return
                 }
-                if (name !in contactFingerprints) {
-                    Log.d(TAG, "NSD unknown service (not a contact): ${name.take(8)}")
-                    return
-                }
-                Log.i(TAG, "NSD contact found: ${name.take(8)} — resolving")
+                Log.i(TAG, "NSD peer found: ${name.take(8)} — resolving")
                 nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
                     override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
                         Log.w(TAG, "NSD resolve failed for ${info.serviceName.take(8)}: errorCode=$errorCode")
