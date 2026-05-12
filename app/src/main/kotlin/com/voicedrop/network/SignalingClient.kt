@@ -109,6 +109,7 @@ class SignalingClient(
         Log.d(TAG, "disconnect")
         webSocket?.close(1000, "Done")
         webSocket = null
+        signalChannel.close()  // terminate collect immediately; onClosed may arrive late
     }
 
     private fun parseSignal(text: String): Signal? {
