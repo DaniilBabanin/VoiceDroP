@@ -36,6 +36,7 @@ class FramingTest {
 
         val testData = "Hello from client".toByteArray()
         client.send(testData)
+        clientOut.close() // EOF unblocks the next read in receiveFlow so first() can terminate
 
         val received = server.receiveFlow().first()
         assertArrayEquals(testData, received)
@@ -67,6 +68,7 @@ class FramingTest {
 
         val testData = ByteArray(32768) { (it % 256).toByte() }
         client.send(testData)
+        clientOut.close() // EOF unblocks the next read in receiveFlow so first() can terminate
 
         val received = server.receiveFlow().first()
         assertArrayEquals(testData, received)

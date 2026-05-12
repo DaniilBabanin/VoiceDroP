@@ -1,5 +1,6 @@
 package com.voicedrop.network
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -50,6 +51,8 @@ class PeerConnection(private val socket: Socket) {
         while (isAlive && !socket.isClosed) {
             try {
                 emit(receive())
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 isAlive = false
                 break
