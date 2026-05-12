@@ -44,6 +44,10 @@ class SignalingClient(
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
+        // Send periodic pings so OkHttp detects a zombie connection (server-side DO terminated
+        // without a clean WS close frame) and fires onFailure → collect() ends → reconnect.
+        // Detection = up to 2 × interval after server dies.
+        .pingInterval(20, TimeUnit.SECONDS)
         .build()
 
     private val signalChannel = Channel<Signal>(Channel.UNLIMITED)
