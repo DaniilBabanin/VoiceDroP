@@ -1,7 +1,7 @@
 name: Pre-Release (Testing)
 
-# Builds an unsigned debug APK for pre-release testing tags (v0.x.x)
-# No keystore required — debug-signed by the Android build tools default key
+# Builds a release-signed APK for pre-release testing tags (v0.x.x)
+# Signed with the same keystore as production so updates install over prior builds
 on:
   push:
     tags:
@@ -35,14 +35,34 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build debug APK
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Decode keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > app/release.keystore
+
+      - name: Build release APK
+        env:
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+        run: |
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file=release.keystore \
+            -Pandroid.injected.signing.store.password="$STORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASSWORD" \
+            --stacktrace
 
       - name: Rename APK with version
         run: |
           VERSION="${GITHUB_REF_NAME}"
-          cp app/build/outputs/apk/debug/app-debug.apk \
-             "voicedrop-${VERSION}-debug.apk"
+          cp app/build/outputs/apk/release/app-release.apk \
+             "voicedrop-${VERSION}.apk"
+
+      - name: Clean up keystore
+        if: always()
+        run: rm -f app/release.keystore
 
       - name: Create Pre-Release
         uses: softprops/action-gh-release@v2
@@ -53,12 +73,11 @@ jobs:
           body: |
             ## VoiceDrop ${{ github.ref_name }} — Testing Build
 
-            **This is an unsigned debug APK for internal testing only.**
-            Not for production use. See [README.md](README.md) for setup instructions.
+            Pre-release build for internal testing. See [README.md](README.md) for setup instructions.
 
             ### Installation
             1. Enable "Install from unknown sources" on your device
-            2. Download `voicedrop-${{ github.ref_name }}-debug.apk`
+            2. Download `voicedrop-${{ github.ref_name }}.apk`
             3. Install and follow the [setup guide](README.md#3-first-time-setup-do-on-both-phones)
 
             ### What to test
@@ -68,6 +87,6 @@ jobs:
             - [ ] Receive and play back the message
             - [ ] Test on LAN (both phones on same WiFi)
             - [ ] Test cross-network (one phone on LTE)
-          files: voicedrop-${{ github.ref_name }}-debug.apk
+          files: voicedrop-${{ github.ref_name }}.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
