@@ -27,6 +27,12 @@ abstract class AppDatabase : RoomDatabase() {
 
         @TypeConverter
         fun toByteArray(value: String): ByteArray = android.util.Base64.decode(value, android.util.Base64.NO_WRAP)
+
+        @TypeConverter
+        fun fromTransportType(value: TransportType): Int = value.value
+
+        @TypeConverter
+        fun toTransportType(value: Int): TransportType = TransportType.fromInt(value)
     }
 
     companion object {

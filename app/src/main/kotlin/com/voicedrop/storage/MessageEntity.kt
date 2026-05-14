@@ -20,7 +20,7 @@ data class MessageEntity(
     val contactId: String,
     val direction: Int,
     val state: Int,
-    val transport: Int,
+    val transport: TransportType,
     val encryptedFilePath: String?,
     val durationMs: Int,
     val deleteAfterMs: Long,
@@ -41,9 +41,5 @@ data class MessageEntity(
         const val STATE_DELETED = 4
         const val STATE_UNDELIVERABLE = 5
 
-        const val TRANSPORT_UNKNOWN = 0
-        const val TRANSPORT_LAN = 1
-        const val TRANSPORT_P2P = 2
-        const val TRANSPORT_RELAY = 3
     }
 }

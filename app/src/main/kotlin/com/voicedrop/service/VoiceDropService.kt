@@ -19,6 +19,7 @@ import com.voicedrop.notification.NotificationHelper
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.MessageRepository
+import com.voicedrop.storage.TransportType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -161,7 +162,7 @@ class VoiceDropService : Service() {
                         contactId = contactId,
                         direction = MessageEntity.DIRECTION_OUTBOUND,
                         state = MessageEntity.STATE_OUTBOX,
-                        transport = MessageEntity.TRANSPORT_UNKNOWN,
+                        transport = TransportType.UNKNOWN,
                         encryptedFilePath = encFile.absolutePath,
                         durationMs = durationMs,
                         deleteAfterMs = deleteAfterMs,
@@ -175,7 +176,7 @@ class VoiceDropService : Service() {
 
                 val transport = connectionManager.sendToContact(contactId, wireFrame)
                 repository.updateMessageStateSent(uuid.toString(), MessageEntity.STATE_SENT, System.currentTimeMillis())
-                if (transport != MessageEntity.TRANSPORT_UNKNOWN) {
+                if (transport != TransportType.UNKNOWN) {
                     repository.updateTransport(uuid.toString(), transport)
                 }
 

@@ -15,6 +15,7 @@ import com.voicedrop.notification.NotificationHelper
 import com.voicedrop.storage.ContactEntity
 import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.MessageRepository
+import com.voicedrop.storage.TransportType
 import com.voicedrop.storage.PendingActionEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -63,7 +64,7 @@ class ConnectionManager(
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
     private val connections = mutableMapOf<String, PeerConnection>()
-    private val connectionTransports = mutableMapOf<String, Int>()
+    private val connectionTransports = mutableMapOf<String, TransportType>()
     private val mutexes = mutableMapOf<String, Mutex>()
     private val backoffJobs = mutableMapOf<String, Job>()
     private val connector = PeerConnector()
@@ -121,25 +122,25 @@ class ConnectionManager(
         scope.launch { flushAllOutboxes() }
     }
 
-    suspend fun sendToContact(contactId: String, frame: ByteArray): Int {
+    suspend fun sendToContact(contactId: String, frame: ByteArray): TransportType {
         val fp = contactId.take(8)
         Log.i(TAG, "sendToContact fp=$fp frameBytes=${frame.size}")
         val mutex = mutexes.getOrPut(contactId) { Mutex() }
         return mutex.withLock {
             val transport = when {
                 tryExistingConnection(contactId, frame) ->
-                    connectionTransports[contactId] ?: MessageEntity.TRANSPORT_UNKNOWN
-                tryLanConnect(contactId, frame) -> MessageEntity.TRANSPORT_LAN
-                tryStunConnect(contactId, frame) -> MessageEntity.TRANSPORT_P2P
-                tryRelayUpload(contactId, frame) -> MessageEntity.TRANSPORT_RELAY
+                    connectionTransports[contactId] ?: TransportType.UNKNOWN
+                tryLanConnect(contactId, frame) -> TransportType.LAN
+                tryStunConnect(contactId, frame) -> TransportType.P2P
+                tryRelayUpload(contactId, frame) -> TransportType.RELAY
                 else -> {
                     Log.w(TAG, "sendToContact fp=$fp: all paths failed — queuing outbox, starting backoff")
                     enqueueOutbox(contactId, frame)
                     startActiveBackoff(contactId)
-                    MessageEntity.TRANSPORT_UNKNOWN
+                    TransportType.UNKNOWN
                 }
             }
-            if (transport != MessageEntity.TRANSPORT_UNKNOWN) {
+            if (transport != TransportType.UNKNOWN) {
                 Log.i(TAG, "sendToContact fp=$fp: delivered via transport=$transport")
             }
             transport
@@ -180,7 +181,7 @@ class ConnectionManager(
             return false
         }
         Log.i(TAG, "path2 fp=$fp: LAN peer at ${peer.host}:${peer.port}")
-        return connectAndSend(contactId, peer.host, peer.port, frame, MessageEntity.TRANSPORT_LAN)
+        return connectAndSend(contactId, peer.host, peer.port, frame, TransportType.LAN)
     }
 
     private suspend fun tryStunConnect(contactId: String, frame: ByteArray): Boolean {
@@ -264,7 +265,7 @@ class ConnectionManager(
 
         val conn = PeerConnection(socket)
         connections[contactId] = conn
-        connectionTransports[contactId] = MessageEntity.TRANSPORT_P2P
+        connectionTransports[contactId] = TransportType.P2P
         scope.launch { receiveLoop(contactId, conn) }
         conn.send(frame)
         Log.i(TAG, "path3 fp=$fp: sent ${frame.size} bytes via signaling/WAN path")
@@ -276,7 +277,7 @@ class ConnectionManager(
         host: String,
         port: Int,
         frame: ByteArray,
-        transport: Int
+        transport: TransportType
     ): Boolean {
         val fp = contactId.take(8)
         return try {
@@ -343,20 +344,20 @@ class ConnectionManager(
         Log.i(TAG, "flush fp=$fp: flushing ${actions.size} pending action(s)")
         var allSent = true
         for (action in actions) {
-            var transport = MessageEntity.TRANSPORT_UNKNOWN
+            var transport = TransportType.UNKNOWN
             val sent = when {
                 tryExistingConnection(contactId, action.payload) -> {
-                    transport = connectionTransports[contactId] ?: MessageEntity.TRANSPORT_UNKNOWN
+                    transport = connectionTransports[contactId] ?: TransportType.UNKNOWN
                     true
                 }
                 tryLanConnect(contactId, action.payload) -> {
-                    transport = MessageEntity.TRANSPORT_LAN; true
+                    transport = TransportType.LAN; true
                 }
                 tryStunConnect(contactId, action.payload) -> {
-                    transport = MessageEntity.TRANSPORT_P2P; true
+                    transport = TransportType.P2P; true
                 }
                 tryRelayUpload(contactId, action.payload) -> {
-                    transport = MessageEntity.TRANSPORT_RELAY; true
+                    transport = TransportType.RELAY; true
                 }
                 else -> false
             }
@@ -392,7 +393,7 @@ class ConnectionManager(
     private suspend fun receiveLoop(contactId: String, conn: PeerConnection) {
         Log.d(TAG, "receiveLoop fp=${contactId.take(8)}: started")
         conn.receiveFlow().collect { frame ->
-            val transport = connectionTransports[contactId] ?: MessageEntity.TRANSPORT_UNKNOWN
+            val transport = connectionTransports[contactId] ?: TransportType.UNKNOWN
             Log.i(TAG, "receiveLoop fp=${contactId.take(8)}: received ${frame.size} bytes transport=$transport")
             processFrame(frame, transport)
         }
@@ -426,7 +427,7 @@ class ConnectionManager(
         val transport = if (socket.inetAddress.isSiteLocalAddress ||
             socket.inetAddress.isLinkLocalAddress ||
             socket.inetAddress.isLoopbackAddress
-        ) MessageEntity.TRANSPORT_LAN else MessageEntity.TRANSPORT_P2P
+        ) TransportType.LAN else TransportType.P2P
         Log.i(TAG, "handleIncoming: from $addr transport=$transport")
         val conn = PeerConnection(socket)
         scope.launch {
@@ -438,7 +439,7 @@ class ConnectionManager(
         }
     }
 
-    private suspend fun processFrame(frame: ByteArray, transport: Int = MessageEntity.TRANSPORT_UNKNOWN) {
+    private suspend fun processFrame(frame: ByteArray, transport: TransportType = TransportType.UNKNOWN) {
         // Wire frame layout: [4-byte inner length][32-byte senderFp][32-byte recipFp][16-byte uuid][8-byte ts][ciphertext]
         val minHeaderSize = 4 + 32 + 32 + 16 + 8
         if (frame.size < minHeaderSize) {
@@ -494,7 +495,7 @@ class ConnectionManager(
         frame: ParsedFrame,
         contact: ContactEntity,
         sessionKey: ByteArray,
-        transport: Int
+        transport: TransportType
     ) {
         if (payload.size < 4 + 8) {
             Log.w(TAG, "handleVoiceMessage: payload too short")
@@ -558,11 +559,11 @@ class ConnectionManager(
                 val actions = repository.getPendingActionsForContact(peer.fingerprint)
                 Log.d(TAG, "LAN: ${actions.size} pending action(s) for fp=${peer.fingerprint.take(8)}")
                 for (action in actions) {
-                    val sent = connectAndSend(peer.fingerprint, peer.host, peer.port, action.payload, MessageEntity.TRANSPORT_LAN)
+                    val sent = connectAndSend(peer.fingerprint, peer.host, peer.port, action.payload, TransportType.LAN)
                     if (sent) {
                         repository.deletePendingAction(action.id)
                         uuidFromFrame(action.payload)?.let { uuid ->
-                            repository.updateTransport(uuid, MessageEntity.TRANSPORT_LAN)
+                            repository.updateTransport(uuid, TransportType.LAN)
                         }
                     }
                 }
@@ -631,7 +632,7 @@ class ConnectionManager(
                                             try {
                                                 val bytes = android.util.Base64.decode(signal.data, android.util.Base64.NO_WRAP)
                                                 Log.i(TAG, "presence: relay_frame fp=${contact.id.take(8)} size=${bytes.size}")
-                                                processFrame(bytes, MessageEntity.TRANSPORT_RELAY)
+                                                processFrame(bytes, TransportType.RELAY)
                                             } catch (e: Exception) {
                                                 Log.w(TAG, "presence: relay_frame error fp=${contact.id.take(8)} — ${e.message}")
                                             }
@@ -677,7 +678,7 @@ class ConnectionManager(
                     val base64 = frameEl.jsonPrimitive.content
                     val bytes = android.util.Base64.decode(base64, android.util.Base64.NO_WRAP)
                     Log.i(TAG, "presence: relay_frame fp=$fp size=${bytes.size}")
-                    processFrame(bytes, MessageEntity.TRANSPORT_RELAY)
+                    processFrame(bytes, TransportType.RELAY)
                 } catch (e: Exception) {
                     Log.w(TAG, "presence: relay_frame error fp=$fp — ${e.message}")
                 }

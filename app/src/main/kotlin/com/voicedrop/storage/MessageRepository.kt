@@ -34,7 +34,7 @@ class MessageRepository(
     suspend fun updateTranscription(uuid: String, transcription: String) =
         messageDao.updateTranscription(uuid, transcription)
 
-    suspend fun updateTransport(uuid: String, transport: Int) =
+    suspend fun updateTransport(uuid: String, transport: TransportType) =
         messageDao.updateTransport(uuid, transport)
 
     suspend fun markDeleted(uuid: String) = messageDao.markDeleted(uuid)

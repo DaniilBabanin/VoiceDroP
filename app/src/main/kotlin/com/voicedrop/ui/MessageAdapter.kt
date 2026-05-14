@@ -15,6 +15,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.voicedrop.R
 import com.voicedrop.service.VoiceDropService
 import com.voicedrop.storage.MessageEntity
+import com.voicedrop.storage.TransportType
 import java.io.File
 
 class MessageAdapter : ListAdapter<MessageEntity, MessageAdapter.ViewHolder>(DIFF_CALLBACK) {
@@ -82,10 +83,11 @@ class MessageAdapter : ListAdapter<MessageEntity, MessageAdapter.ViewHolder>(DIF
             else -> ""
         }
 
-        private fun transportLabel(transport: Int): String? = when (transport) {
-            MessageEntity.TRANSPORT_LAN -> itemView.context.getString(R.string.transport_lan)
-            MessageEntity.TRANSPORT_P2P -> itemView.context.getString(R.string.transport_p2p)
-            MessageEntity.TRANSPORT_RELAY -> itemView.context.getString(R.string.transport_relay)
+        private fun transportLabel(transport: TransportType): String? = when (transport) {
+            TransportType.LAN -> itemView.context.getString(R.string.transport_lan)
+            TransportType.P2P -> itemView.context.getString(R.string.transport_p2p)
+            TransportType.RELAY -> itemView.context.getString(R.string.transport_relay)
+            TransportType.WEBRTC -> itemView.context.getString(R.string.transport_p2p)
             else -> null
         }
 
