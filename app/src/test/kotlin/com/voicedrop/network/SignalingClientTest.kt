@@ -50,6 +50,13 @@ class SignalingClientTest {
             override fun onMessage(ws: WebSocket, text: String) {
                 serverReceived.add(text)
             }
+
+            override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+                // Complete the close handshake so MockWebServer's per-connection task
+                // queue can become idle. Without this, shutdown() waits 5s for the
+                // half-closed WebSocket queue and then throws IOException.
+                ws.close(code, null)
+            }
         }
         server.enqueue(MockResponse().withWebSocketUpgrade(listener))
         server.start()
@@ -62,6 +69,8 @@ class SignalingClientTest {
     @After
     fun tearDown() {
         client.disconnect()
+        // Force-close server side in case the test didn't trigger a clean close handshake.
+        serverSocket.getAndSet(null)?.close(1000, "tearDown")
         server.shutdown()
     }
 
