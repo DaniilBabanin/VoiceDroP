@@ -3,6 +3,9 @@ package com.voicedrop.notification
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.widget.Toast
+import com.voicedrop.R
+import com.voicedrop.audio.VoiceMessageShare
 import com.voicedrop.service.VoiceDropService
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.MessageEntity
@@ -13,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
@@ -64,6 +68,25 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 context.startService(serviceIntent)
                 if (uuid != null) notificationHelper.cancelNotification(uuid.hashCode())
             }
+
+            ACTION_SHARE -> {
+                if (uuid == null) return
+                val pendingResult = goAsync()
+                scope.launch {
+                    try {
+                        val file = VoiceMessageShare.prepare(context, uuid)
+                        if (file == null) {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, R.string.share_unavailable, Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            VoiceMessageShare.share(context, file)
+                        }
+                    } finally {
+                        pendingResult.finish()
+                    }
+                }
+            }
         }
     }
 
@@ -91,5 +114,6 @@ class NotificationActionReceiver : BroadcastReceiver() {
         const val ACTION_PLAY = "com.voicedrop.notification.PLAY"
         const val ACTION_DELETE = "com.voicedrop.notification.DELETE"
         const val ACTION_STOP_PLAY = "com.voicedrop.notification.STOP_PLAY"
+        const val ACTION_SHARE = "com.voicedrop.notification.SHARE"
     }
 }

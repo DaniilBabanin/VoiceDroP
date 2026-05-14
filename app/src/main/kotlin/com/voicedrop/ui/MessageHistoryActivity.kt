@@ -7,9 +7,11 @@ import android.view.View
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import android.widget.Toast
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.voicedrop.R
+import com.voicedrop.audio.VoiceMessageShare
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.MessageRepository
 import kotlinx.coroutines.CoroutineScope
@@ -39,7 +41,20 @@ class MessageHistoryActivity : AppCompatActivity() {
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         toolbar.setNavigationOnClickListener { finish() }
 
-        adapter = MessageAdapter()
+        adapter = MessageAdapter { message ->
+            scope.launch {
+                val file = VoiceMessageShare.prepare(this@MessageHistoryActivity, message.uuid)
+                if (file == null) {
+                    Toast.makeText(
+                        this@MessageHistoryActivity,
+                        R.string.share_unavailable,
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    VoiceMessageShare.share(this@MessageHistoryActivity, file)
+                }
+            }
+        }
 
         val recyclerView = findViewById<RecyclerView>(R.id.recycler_messages)
         val layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }

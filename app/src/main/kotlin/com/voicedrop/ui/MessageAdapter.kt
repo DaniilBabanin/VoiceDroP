@@ -1,6 +1,5 @@
 package com.voicedrop.ui
 
-import android.content.Context
 import android.text.format.DateUtils
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -18,7 +17,9 @@ import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.TransportType
 import java.io.File
 
-class MessageAdapter : ListAdapter<MessageEntity, MessageAdapter.ViewHolder>(DIFF_CALLBACK) {
+class MessageAdapter(
+    private val onShareRequest: (MessageEntity) -> Unit = {}
+) : ListAdapter<MessageEntity, MessageAdapter.ViewHolder>(DIFF_CALLBACK) {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
         val view = LayoutInflater.from(parent.context)
@@ -27,7 +28,7 @@ class MessageAdapter : ListAdapter<MessageEntity, MessageAdapter.ViewHolder>(DIF
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-        holder.bind(getItem(position))
+        holder.bind(getItem(position), onShareRequest)
     }
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
@@ -38,7 +39,7 @@ class MessageAdapter : ListAdapter<MessageEntity, MessageAdapter.ViewHolder>(DIF
         private val transportText: TextView = view.findViewById(R.id.transportText)
         private val playButton: Button = view.findViewById(R.id.playButton)
 
-        fun bind(message: MessageEntity) {
+        fun bind(message: MessageEntity, onShareRequest: (MessageEntity) -> Unit) {
             val isOutbound = message.direction == MessageEntity.DIRECTION_OUTBOUND
             val lp = card.layoutParams as FrameLayout.LayoutParams
             lp.gravity = if (isOutbound) Gravity.END else Gravity.START
@@ -64,6 +65,15 @@ class MessageAdapter : ListAdapter<MessageEntity, MessageAdapter.ViewHolder>(DIF
                 playButton.setOnClickListener { v ->
                     val intent = VoiceDropService.playIntent(v.context, message.uuid)
                     v.context.startForegroundService(intent)
+                }
+            }
+
+            card.setOnLongClickListener {
+                if (canPlay) {
+                    onShareRequest(message)
+                    true
+                } else {
+                    false
                 }
             }
         }

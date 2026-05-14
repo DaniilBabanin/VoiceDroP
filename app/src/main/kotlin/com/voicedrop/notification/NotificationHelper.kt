@@ -75,11 +75,22 @@ class NotificationHelper(private val context: Context) {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        val shareIntent = PendingIntent.getBroadcast(
+            context,
+            notifId + 3,
+            Intent(context, NotificationActionReceiver::class.java).apply {
+                action = NotificationActionReceiver.ACTION_SHARE
+                putExtra("uuid", uuid)
+            },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
         return NotificationCompat.Builder(context, CHANNEL_MESSAGES)
             .setSmallIcon(R.drawable.ic_tile_idle)
             .setContentTitle(contact.name)
             .setContentText("Voice message ($duration)")
             .addAction(R.drawable.ic_tile_idle, "▶ Play", playIntent)
+            .addAction(R.drawable.ic_tile_idle, "↗ Share", shareIntent)
             .addAction(R.drawable.ic_tile_idle, "🗑 Delete", deleteIntent)
             .setAutoCancel(false)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
