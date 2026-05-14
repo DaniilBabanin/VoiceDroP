@@ -27,6 +27,8 @@ Download `app-release.apk` from [Releases](../../releases). Enable "Install from
 
 Open VoiceDrop → menu → Settings. Set a display name, paste the signaling URL as `wss://<worker-subdomain>.workers.dev/signal`, tap Test Connection, then Save.
 
+**Disable battery optimization for VoiceDrop.** Android Settings → Apps → VoiceDrop → Battery → Unrestricted (path varies by OEM). Without this, Android will eventually kill the background listener and incoming messages won't arrive until you reopen the app. VoiceDrop avoids Firebase/Google push to keep the app fully open source and account-free, so message delivery relies on a long-lived WebSocket held by a foreground service — which the OS only keeps alive if battery optimization is off.
+
 ---
 
 ## 4. Pair contacts
@@ -81,4 +83,8 @@ To generate a keystore: `keytool -genkey -v -keystore release.keystore -alias vo
 
 ---
 
-See [SECURITY.md](SECURITY.md) for the threat model, vulnerability reporting, and export controls.
+## Legal
+
+- [PRIVACY.md](PRIVACY.md) — what data the app stores, what metadata third parties (Cloudflare, Google STUN) see, and the limits of deletion. Linked from in-app Settings.
+- [SECURITY.md](SECURITY.md) — threat model and vulnerability reporting.
+- [EXPORT.md](EXPORT.md) — US export-control terms. **Do not download or install if you are located in or a national of Cuba, Iran, North Korea, Syria, or the Crimea / DNR / LNR regions of Ukraine, or if you are on a US restricted-party list.**
