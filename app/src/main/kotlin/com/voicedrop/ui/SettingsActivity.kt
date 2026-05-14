@@ -12,7 +12,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
-import com.google.android.gms.oss.licenses.OssLicensesMenuActivity
+import com.mikepenz.aboutlibraries.LibsBuilder
 import com.voicedrop.R
 import com.voicedrop.crypto.KeyManager
 import com.voicedrop.service.VoiceDropService
@@ -78,7 +78,12 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.button_open_source_licenses).setOnClickListener {
-            startActivity(Intent(this, OssLicensesMenuActivity::class.java))
+            LibsBuilder()
+                .withActivityTitle(getString(R.string.open_source_licenses))
+                .withSearchEnabled(true)
+                .withLicenseShown(true)
+                .withEdgeToEdge(true)
+                .start(this)
         }
 
         val testConnectionButton = findViewById<Button>(R.id.button_test_connection)

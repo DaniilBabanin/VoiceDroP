@@ -41,7 +41,7 @@ VoiceDrop relies on the following audited cryptographic libraries:
 
 - **Google Tink** (Apache 2.0) — X25519, HKDF, XChaCha20-Poly1305
 - **Android Keystore System** — AES-256-GCM hardware-backed key storage
-- **libopus** (BSD) — audio codec (not a security primitive)
+- **libopus** (BSD-3-Clause) — audio codec (not a security primitive); attribution in [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)
 
 ## Known Limitations
 
