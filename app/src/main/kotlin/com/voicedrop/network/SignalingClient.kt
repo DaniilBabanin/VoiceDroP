@@ -52,7 +52,12 @@ class SignalingClient(
 
     private val signalChannel = Channel<Signal>(Channel.UNLIMITED)
     private var webSocket: WebSocket? = null
-    private val json = Json { ignoreUnknownKeys = true }
+    // encodeDefaults so `type` (which has a default value on each Signal subclass) is included
+    // on the wire — without it, send() emits typeless JSON that receivers can't dispatch on.
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
 
     val signals: Flow<Signal> = signalChannel.receiveAsFlow()
 
