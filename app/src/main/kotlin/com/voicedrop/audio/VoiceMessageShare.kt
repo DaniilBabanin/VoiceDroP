@@ -2,6 +2,7 @@ package com.voicedrop.audio
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.util.Base64
 import androidx.core.content.FileProvider
 import com.voicedrop.crypto.ContactKey
@@ -56,6 +57,10 @@ object VoiceMessageShare {
             "${context.packageName}.fileprovider",
             file
         )
+        shareUri(context, uri)
+    }
+
+    internal fun shareUri(context: Context, uri: Uri) {
         val sendIntent = Intent(Intent.ACTION_SEND).apply {
             type = "audio/wav"
             putExtra(Intent.EXTRA_STREAM, uri)
