@@ -27,4 +27,11 @@
         android:contentDescription="@null"
         android:visibility="gone"/>
 
+    <CheckBox
+        android:id="@+id/checkbox_active"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:contentDescription="@string/contact_active_checkbox_description"/>
+
 </LinearLayout>

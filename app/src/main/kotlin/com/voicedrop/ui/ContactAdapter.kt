@@ -3,11 +3,13 @@ package com.voicedrop.ui
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.CheckBox
 import android.widget.TextView
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.voicedrop.R
+import com.voicedrop.storage.ActiveContactsPrefs
 import com.voicedrop.storage.ContactEntity
 
 class ContactAdapter(
@@ -17,20 +19,46 @@ class ContactAdapter(
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
         val view = LayoutInflater.from(parent.context)
             .inflate(R.layout.item_contact, parent, false)
-        return ViewHolder(view)
+        return ViewHolder(view, this)
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val contact = getItem(position)
-        holder.bind(contact)
+        holder.bind(contact, currentList)
         holder.itemView.setOnClickListener { onContactClick(contact.id) }
     }
 
-    class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
-        private val nameText: TextView = view.findViewById(R.id.text_contact_name)
+    fun refreshActiveTicks() {
+        notifyDataSetChanged()
+    }
 
-        fun bind(contact: ContactEntity) {
+    class ViewHolder(view: View, private val adapter: ContactAdapter) :
+        RecyclerView.ViewHolder(view) {
+        private val nameText: TextView = view.findViewById(R.id.text_contact_name)
+        private val checkbox: CheckBox = view.findViewById(R.id.checkbox_active)
+
+        fun bind(contact: ContactEntity, all: List<ContactEntity>) {
+            val ctx = itemView.context
             nameText.text = contact.name
+
+            // Tick reflects the *resolved* primary active (explicit pick, or newest fallback
+            // when nothing is explicitly active).
+            val primary = ActiveContactsPrefs.getPrimaryActive(ctx, all)
+            val isChecked = primary?.id == contact.id
+
+            checkbox.setOnCheckedChangeListener(null)
+            checkbox.isChecked = isChecked
+            checkbox.setOnCheckedChangeListener { _, checked ->
+                val current = ActiveContactsPrefs.getActiveSet(ctx).toMutableSet()
+                if (checked) {
+                    current.clear() // single-select today; multi-select arrives later
+                    current.add(contact.id)
+                } else {
+                    current.remove(contact.id)
+                }
+                ActiveContactsPrefs.setActive(ctx, current)
+                adapter.refreshActiveTicks()
+            }
         }
     }
 

@@ -76,4 +76,5 @@
     <string name="widget_unbound">Tap to set</string>
     <string name="widget_loading">…</string>
     <string name="widget_contact_missing">?</string>
+    <string name="contact_active_checkbox_description">Use this contact for the quick tile</string>
 </resources>
