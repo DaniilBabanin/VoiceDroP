@@ -95,6 +95,34 @@
                 android:layout_marginBottom="16dp"
                 android:background="@color/color_divider"/>
 
+            <!-- Default recipient -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/default_recipient_label"
+                android:textAppearance="?attr/textAppearanceSubtitle1"/>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/default_recipient_description"
+                android:textAppearance="?attr/textAppearanceCaption"/>
+
+            <Button
+                android:id="@+id/button_default_recipient"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                style="?attr/materialButtonOutlinedStyle"/>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="16dp"
+                android:background="@color/color_divider"/>
+
             <!-- Server relay fallback -->
             <androidx.appcompat.widget.SwitchCompat
                 android:id="@+id/switch_relay_fallback"

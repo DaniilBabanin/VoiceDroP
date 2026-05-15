@@ -67,7 +67,7 @@ class TalkTileService : TileService() {
                             showDialog(ContactPickerDialog(this@TalkTileService, emptyList()) {})
                             return@launch
                         }
-                        val target = ActiveContactsPrefs.getPrimaryActive(
+                        val target = ActiveContactsPrefs.resolveRecipient(
                             this@TalkTileService, contacts
                         ) ?: return@launch
                         startRecording(target.id)
@@ -122,7 +122,7 @@ class TalkTileService : TileService() {
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_tile_idle)
                 scope.launch {
                     val contacts = repository.getAllContacts().first()
-                    val target = ActiveContactsPrefs.getPrimaryActive(this@TalkTileService, contacts)
+                    val target = ActiveContactsPrefs.resolveRecipient(this@TalkTileService, contacts)
                     tile.label = when {
                         contacts.isEmpty() -> "No contacts"
                         target != null -> target.name

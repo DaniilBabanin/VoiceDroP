@@ -4,6 +4,7 @@ import android.app.Application
 import com.google.crypto.tink.aead.AeadConfig
 import com.google.crypto.tink.hybrid.HybridConfig
 import com.voicedrop.service.AutoDeleteWorker
+import com.voicedrop.storage.ActiveContactsPrefs
 import eu.buney.kopus.OpusLoader
 
 class App : Application() {
@@ -16,5 +17,6 @@ class App : Application() {
         AeadConfig.register()
         HybridConfig.register()
         AutoDeleteWorker.schedule(this)
+        ActiveContactsPrefs.migrateLegacyActiveSet(this)
     }
 }

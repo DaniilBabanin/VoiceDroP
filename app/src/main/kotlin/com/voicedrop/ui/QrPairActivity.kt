@@ -25,6 +25,7 @@ import com.journeyapps.barcodescanner.DecoratedBarcodeView
 import com.voicedrop.R
 import com.voicedrop.crypto.ContactKey
 import com.voicedrop.crypto.KeyManager
+import com.voicedrop.storage.ActiveContactsPrefs
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.ContactEntity
 import com.voicedrop.storage.MessageRepository
@@ -249,6 +250,9 @@ class QrPairActivity : AppCompatActivity() {
             addedAt = System.currentTimeMillis()
         )
         repository.upsertContact(contact)
+        if (ActiveContactsPrefs.getDefaultId(this) == null) {
+            ActiveContactsPrefs.setDefaultId(this, contact.id)
+        }
         Toast.makeText(this, "${card.name} added!", Toast.LENGTH_SHORT).show()
         finish()
     }

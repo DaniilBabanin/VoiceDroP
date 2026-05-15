@@ -41,22 +41,15 @@ class ContactAdapter(
             val ctx = itemView.context
             nameText.text = contact.name
 
-            // Tick reflects the *resolved* primary active (explicit pick, or newest fallback
-            // when nothing is explicitly active).
-            val primary = ActiveContactsPrefs.getPrimaryActive(ctx, all)
-            val isChecked = primary?.id == contact.id
+            // Tick reflects the explicit default; falls back to "newest" only when unset,
+            // so a fresh install with one contact still shows it ticked.
+            val resolved = ActiveContactsPrefs.resolveRecipient(ctx, all)
+            val isChecked = resolved?.id == contact.id
 
             checkbox.setOnCheckedChangeListener(null)
             checkbox.isChecked = isChecked
             checkbox.setOnCheckedChangeListener { _, checked ->
-                val current = ActiveContactsPrefs.getActiveSet(ctx).toMutableSet()
-                if (checked) {
-                    current.clear() // single-select today; multi-select arrives later
-                    current.add(contact.id)
-                } else {
-                    current.remove(contact.id)
-                }
-                ActiveContactsPrefs.setActive(ctx, current)
+                ActiveContactsPrefs.setDefaultId(ctx, if (checked) contact.id else null)
                 adapter.refreshActiveTicks()
             }
         }
