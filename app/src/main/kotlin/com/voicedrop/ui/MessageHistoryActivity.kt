@@ -12,6 +12,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.voicedrop.R
 import com.voicedrop.audio.VoiceMessageShare
+import com.voicedrop.service.ServiceState
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.MessageRepository
 import kotlinx.coroutines.CoroutineScope
@@ -77,6 +78,12 @@ class MessageHistoryActivity : AppCompatActivity() {
                     adapter.submitList(messages)
                     recyclerView.scrollToPosition(messages.size - 1)
                 }
+            }
+        }
+
+        scope.launch {
+            ServiceState.playingUuid.collectLatest { uuid ->
+                adapter.setPlayingUuid(uuid)
             }
         }
     }

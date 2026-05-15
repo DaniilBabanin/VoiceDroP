@@ -16,6 +16,9 @@ object ServiceState {
     private val _recordingState = MutableStateFlow(RecordingState(State.IDLE, null))
     val recordingState: StateFlow<RecordingState> = _recordingState
 
+    private val _playingUuid = MutableStateFlow<String?>(null)
+    val playingUuid: StateFlow<String?> = _playingUuid
+
     fun updateState(
         state: State,
         contactId: String?,
@@ -28,5 +31,9 @@ object ServiceState {
             startedAtElapsedRealtime,
             startedAtWallClock,
         )
+    }
+
+    fun setPlayingUuid(uuid: String?) {
+        _playingUuid.value = uuid
     }
 }

@@ -3,56 +3,39 @@
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:padding="8dp">
+    android:paddingHorizontal="8dp"
+    android:paddingVertical="3dp">
 
     <LinearLayout
         android:id="@+id/messageCard"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="start"
-        android:orientation="vertical"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
         android:background="?attr/colorSurface"
         android:elevation="2dp"
-        android:padding="12dp"
-        android:maxWidth="280dp">
+        android:paddingStart="4dp"
+        android:paddingEnd="12dp"
+        android:paddingVertical="4dp">
 
-        <TextView
-            android:id="@+id/durationText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textAppearance="?attr/textAppearanceBody2"/>
-
-        <TextView
-            android:id="@+id/statusText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:textAppearance="?attr/textAppearanceCaption"
-            android:alpha="0.6"/>
-
-        <TextView
-            android:id="@+id/timestampText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:textAppearance="?attr/textAppearanceCaption"
-            android:alpha="0.6"/>
-
-        <TextView
-            android:id="@+id/transportText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:textAppearance="?attr/textAppearanceCaption"
-            android:visibility="gone"/>
-
-        <Button
+        <ImageButton
             android:id="@+id/playButton"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_play"
+            android:contentDescription="@string/action_play"
+            android:scaleType="center"/>
+
+        <TextView
+            android:id="@+id/infoText"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            style="?attr/materialButtonOutlinedStyle"
-            android:text="@string/play"/>
+            android:layout_marginStart="4dp"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:textAppearance="?attr/textAppearanceBody2"/>
 
     </LinearLayout>
 

@@ -212,7 +212,9 @@ class VoiceDropService : Service() {
 
     fun play(uuid: String) {
         playbackJob?.cancel()
+        ServiceState.setPlayingUuid(uuid)
         playbackJob = scope.launch {
+            val notifId = uuid.hashCode()
             try {
                 val message = repository.getMessage(uuid) ?: return@launch
                 val contactId = message.contactId
@@ -226,7 +228,6 @@ class VoiceDropService : Service() {
                 val encrypted = encFile.readBytes()
                 val opusBytes = MessageCrypto.decrypt(sessionKey, encrypted)
 
-                val notifId = uuid.hashCode()
                 notificationHelper.updatePlaybackProgress(notifId, 0, message.durationMs)
 
                 audioPlayer.play(opusBytes) { progress ->
@@ -237,10 +238,13 @@ class VoiceDropService : Service() {
                 }
 
                 repository.updateMessageState(uuid, MessageEntity.STATE_PLAYED)
-                notificationHelper.cancelNotification(notifId)
-
             } catch (e: Exception) {
                 Log.e(TAG, "Playback failed", e)
+            } finally {
+                notificationHelper.cancelNotification(notifId)
+                if (ServiceState.playingUuid.value == uuid) {
+                    ServiceState.setPlayingUuid(null)
+                }
             }
         }
     }
@@ -248,6 +252,7 @@ class VoiceDropService : Service() {
     private fun stopPlay() {
         playbackJob?.cancel()
         playbackJob = null
+        ServiceState.setPlayingUuid(null)
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -328,6 +333,11 @@ class VoiceDropService : Service() {
             Intent(context, VoiceDropService::class.java).apply {
                 action = ACTION_PLAY
                 putExtra(EXTRA_UUID, uuid)
+            }
+
+        fun stopPlayIntent(context: Context) =
+            Intent(context, VoiceDropService::class.java).apply {
+                action = ACTION_STOP_PLAY
             }
     }
 }

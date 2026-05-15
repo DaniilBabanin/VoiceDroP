@@ -219,18 +219,16 @@ class QrPairActivity : AppCompatActivity() {
         sessionKey: ByteArray,
         emojis: List<String>
     ) {
-        val emojiStr = emojis.joinToString(" ")
+        val view = layoutInflater.inflate(R.layout.dialog_verify_pairing, null)
+        view.findViewById<TextView>(R.id.verificationEmojis).text =
+            emojis.joinToString(" ")
         AlertDialog.Builder(this)
-            .setTitle("Verify Pairing")
-            .setMessage(
-                "Verification code:\n\n$emojiStr\n\n" +
-                "Compare this code with your contact.\n\n" +
-                "By pairing, both parties agree that voice messages may be recorded and sent between paired devices."
-            )
-            .setPositiveButton("Codes match — confirm") { _, _ ->
+            .setTitle(R.string.verification_title)
+            .setView(view)
+            .setPositiveButton(R.string.verification_codes_match) { _, _ ->
                 scope.launch { confirmPairing(card, theirFingerprint, theirPublicKeyBytes, sessionKey) }
             }
-            .setNegativeButton("Codes differ — abort") { _, _ -> }
+            .setNegativeButton(R.string.verification_codes_differ) { _, _ -> }
             .setCancelable(false)
             .show()
     }
