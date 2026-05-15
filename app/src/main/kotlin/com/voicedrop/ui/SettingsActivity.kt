@@ -11,6 +11,7 @@ import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.SwitchCompat
 import androidx.appcompat.widget.Toolbar
 import com.mikepenz.aboutlibraries.LibsBuilder
 import com.voicedrop.R
@@ -53,6 +54,15 @@ class SettingsActivity : AppCompatActivity() {
         val fingerprintText = findViewById<TextView>(R.id.text_my_fingerprint)
         val fp = keyManager.getFingerprint()
         fingerprintText.text = fp.chunked(8).joinToString(" ")
+
+        val relaySwitch = findViewById<SwitchCompat>(R.id.switch_relay_fallback)
+        relaySwitch.isChecked = prefs.getBoolean(PREF_RELAY_FALLBACK_ENABLED, true)
+        relaySwitch.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(PREF_RELAY_FALLBACK_ENABLED, isChecked).apply()
+            startService(Intent(this, VoiceDropService::class.java).apply {
+                action = VoiceDropService.ACTION_RELOAD_CONFIG
+            })
+        }
 
         val saveUrlButton = findViewById<Button>(R.id.button_save_url)
         saveUrlButton.setOnClickListener {
@@ -131,5 +141,6 @@ class SettingsActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "VoiceDrop/Settings"
+        const val PREF_RELAY_FALLBACK_ENABLED = "relay_fallback_enabled"
     }
 }

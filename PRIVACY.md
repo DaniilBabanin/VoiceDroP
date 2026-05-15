@@ -71,6 +71,8 @@ The Worker does **not** see: plaintext audio, your display name, your contacts' 
 
 **International transfers.** When the app contacts your Cloudflare Worker, your IP address may be transferred outside the EEA, UK, and your home jurisdiction depending on which Cloudflare edge serves the request. These transfers rely on Cloudflare's own transfer mechanisms (Standard Contractual Clauses, EU-US Data Privacy Framework where applicable). The developer is not a party to those transfers; the data exchange is between your device and Cloudflare.
 
+**Opting out of the relay.** Settings contains an "Allow server relay fallback" switch (default on). When you turn it off, the app will neither upload encrypted frames to the Worker for store-and-forward nor pull frames the Worker is holding for you. The signaling WebSocket is still used for peer presence and STUN-address exchange so that LAN and direct P2P delivery continue to work; only the store-and-forward path is disabled. Messages to a peer who is not reachable directly will remain queued in your local outbox and be retried when the peer next comes online.
+
 ---
 
 ## 4. What STUN providers receive

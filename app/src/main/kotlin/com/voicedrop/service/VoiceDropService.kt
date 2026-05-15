@@ -21,6 +21,7 @@ import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.MessageRepository
 import com.voicedrop.storage.TransportType
+import com.voicedrop.ui.SettingsActivity.Companion.PREF_RELAY_FALLBACK_ENABLED
 import com.voicedrop.ui.VoiceDropWidgetProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -61,7 +62,8 @@ class VoiceDropService : Service() {
 
         val prefs = getSharedPreferences("voicedrop_settings", Context.MODE_PRIVATE)
         val workerUrl = prefs.getString("signaling_url", "") ?: ""
-        connectionManager = ConnectionManager(this, repository, keyManager, workerUrl)
+        val relayFallback = prefs.getBoolean(PREF_RELAY_FALLBACK_ENABLED, true)
+        connectionManager = ConnectionManager(this, repository, keyManager, workerUrl, relayFallback)
         connectionManager.start()
 
         // Stay alive as a foreground service so the TCP listener is always up for incoming messages
@@ -74,7 +76,8 @@ class VoiceDropService : Service() {
                 connectionManager.stop()
                 val prefs = getSharedPreferences("voicedrop_settings", Context.MODE_PRIVATE)
                 val newUrl = prefs.getString("signaling_url", "") ?: ""
-                connectionManager = ConnectionManager(this, repository, keyManager, newUrl)
+                val relayFallback = prefs.getBoolean(PREF_RELAY_FALLBACK_ENABLED, true)
+                connectionManager = ConnectionManager(this, repository, keyManager, newUrl, relayFallback)
                 connectionManager.start()
             }
             ACTION_RECORD_START -> {

@@ -95,6 +95,28 @@
                 android:layout_marginBottom="16dp"
                 android:background="@color/color_divider"/>
 
+            <!-- Server relay fallback -->
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/switch_relay_fallback"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/relay_fallback_label"
+                android:textAppearance="?attr/textAppearanceSubtitle1"/>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/relay_fallback_description"
+                android:textAppearance="?attr/textAppearanceCaption"/>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="16dp"
+                android:background="@color/color_divider"/>
+
             <!-- My fingerprint -->
             <TextView
                 android:layout_width="wrap_content"

@@ -53,7 +53,8 @@ class ConnectionManager(
     private val context: Context,
     private val repository: MessageRepository,
     private val keyManager: KeyManager,
-    private val workerUrl: String
+    private val workerUrl: String,
+    private val relayFallbackEnabled: Boolean = true
 ) {
     private val ownFingerprint = keyManager.getFingerprint()
     private val notificationHelper = NotificationHelper(context)
@@ -132,7 +133,7 @@ class ConnectionManager(
                     connectionTransports[contactId] ?: TransportType.UNKNOWN
                 tryLanConnect(contactId, frame) -> TransportType.LAN
                 tryStunConnect(contactId, frame) -> TransportType.P2P
-                tryRelayUpload(contactId, frame) -> TransportType.RELAY
+                relayFallbackEnabled && tryRelayUpload(contactId, frame) -> TransportType.RELAY
                 else -> {
                     Log.w(TAG, "sendToContact fp=$fp: all paths failed — queuing outbox, starting backoff")
                     enqueueOutbox(contactId, frame)
@@ -356,7 +357,7 @@ class ConnectionManager(
                 tryStunConnect(contactId, action.payload) -> {
                     transport = TransportType.P2P; true
                 }
-                tryRelayUpload(contactId, action.payload) -> {
+                relayFallbackEnabled && tryRelayUpload(contactId, action.payload) -> {
                     transport = TransportType.RELAY; true
                 }
                 else -> false
@@ -625,16 +626,24 @@ class ConnectionManager(
                                         }
                                         is Signal.Presence -> Log.d(TAG, "presence: peer fp=${contact.id.take(8)} online=${signal.online}")
                                         is Signal.OutboxPing -> {
-                                            Log.i(TAG, "presence: outbox_ping fp=${contact.id.take(8)} count=${signal.count}")
-                                            pullAndDeliverRelay(contact.id, roomKey)
+                                            if (!relayFallbackEnabled) {
+                                                Log.d(TAG, "presence: outbox_ping fp=${contact.id.take(8)} ignored (relay fallback disabled)")
+                                            } else {
+                                                Log.i(TAG, "presence: outbox_ping fp=${contact.id.take(8)} count=${signal.count}")
+                                                pullAndDeliverRelay(contact.id, roomKey)
+                                            }
                                         }
                                         is Signal.RelayFrame -> {
-                                            try {
-                                                val bytes = android.util.Base64.decode(signal.data, android.util.Base64.NO_WRAP)
-                                                Log.i(TAG, "presence: relay_frame fp=${contact.id.take(8)} size=${bytes.size}")
-                                                processFrame(bytes, TransportType.RELAY)
-                                            } catch (e: Exception) {
-                                                Log.w(TAG, "presence: relay_frame error fp=${contact.id.take(8)} — ${e.message}")
+                                            if (!relayFallbackEnabled) {
+                                                Log.d(TAG, "presence: relay_frame fp=${contact.id.take(8)} ignored (relay fallback disabled)")
+                                            } else {
+                                                try {
+                                                    val bytes = android.util.Base64.decode(signal.data, android.util.Base64.NO_WRAP)
+                                                    Log.i(TAG, "presence: relay_frame fp=${contact.id.take(8)} size=${bytes.size}")
+                                                    processFrame(bytes, TransportType.RELAY)
+                                                } catch (e: Exception) {
+                                                    Log.w(TAG, "presence: relay_frame error fp=${contact.id.take(8)} — ${e.message}")
+                                                }
                                             }
                                         }
                                         else -> {}
@@ -659,6 +668,10 @@ class ConnectionManager(
 
     private suspend fun pullAndDeliverRelay(contactId: String, roomKey: String) {
         val fp = contactId.take(8)
+        if (!relayFallbackEnabled) {
+            Log.d(TAG, "presence: pull skipped fp=$fp (relay fallback disabled)")
+            return
+        }
         if (workerUrl.isBlank()) return
         try {
             val url = derivePullUrl(roomKey)
@@ -699,6 +712,10 @@ class ConnectionManager(
 
     private suspend fun tryRelayUpload(contactId: String, frame: ByteArray): Boolean {
         val fp = contactId.take(8)
+        if (!relayFallbackEnabled) {
+            Log.d(TAG, "relay fp=$fp: skipped (relay fallback disabled)")
+            return false
+        }
         if (workerUrl.isBlank()) return false
         val url = deriveRelayUrl(contactId)
         Log.d(TAG, "relay fp=$fp: uploading ${frame.size} bytes")
