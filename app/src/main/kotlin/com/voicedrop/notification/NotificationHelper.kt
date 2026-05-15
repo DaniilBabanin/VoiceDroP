@@ -109,12 +109,15 @@ class NotificationHelper(private val context: Context) {
             .build()
     }
 
-    fun buildRecordingNotification(contactName: String): Notification {
+    fun buildRecordingNotification(contactName: String, startTimeMillis: Long): Notification {
         return NotificationCompat.Builder(context, CHANNEL_RECORDING)
             .setSmallIcon(R.drawable.ic_tile_recording)
             .setContentTitle("🔴 Recording — tap to stop")
             .setContentText("To: $contactName")
             .setOngoing(true)
+            .setWhen(startTimeMillis)
+            .setShowWhen(true)
+            .setUsesChronometer(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()

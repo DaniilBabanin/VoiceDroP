@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -20,6 +21,7 @@ import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.MessageRepository
 import com.voicedrop.storage.TransportType
+import com.voicedrop.ui.VoiceDropWidgetProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +46,7 @@ class VoiceDropService : Service() {
 
     private var recordingContactId: String? = null
     private var recordStartTime: Long = 0L
+    private var recordStartElapsedRealtime: Long = 0L
     private var recordingJob: Deferred<ByteArray>? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var playbackJob: Job? = null
@@ -91,16 +94,26 @@ class VoiceDropService : Service() {
     private fun startRecording(contactId: String) {
         recordingContactId = contactId
         recordStartTime = System.currentTimeMillis()
+        recordStartElapsedRealtime = SystemClock.elapsedRealtime()
 
         scope.launch {
             val c = repository.getContact(contactId)
             val contactName = c?.name ?: "Contact"
 
-            val notification = notificationHelper.buildRecordingNotification(contactName)
+            val notification = notificationHelper.buildRecordingNotification(
+                contactName,
+                recordStartTime,
+            )
             startForeground(NOTIFICATION_ID_RECORDING, notification)
 
             vibrateDouble()
-            ServiceState.updateState(ServiceState.State.RECORDING, contactId)
+            ServiceState.updateState(
+                ServiceState.State.RECORDING,
+                contactId,
+                recordStartElapsedRealtime,
+                recordStartTime,
+            )
+            VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
 
             try {
                 audioRecorder.start()
@@ -110,6 +123,7 @@ class VoiceDropService : Service() {
                 Log.e(TAG, "Failed to start recording", e)
                 startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
                 ServiceState.updateState(ServiceState.State.IDLE, null)
+                VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
             }
         }
     }
@@ -121,6 +135,7 @@ class VoiceDropService : Service() {
 
             vibrateSingle()
             ServiceState.updateState(ServiceState.State.SENDING, contactId)
+            VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
             notificationHelper.updateRecordingNotification(NOTIFICATION_ID_RECORDING, "Sending…")
 
             try {
@@ -187,6 +202,7 @@ class VoiceDropService : Service() {
                 // Return to idle foreground state — keep service alive for incoming messages
                 startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
                 ServiceState.updateState(ServiceState.State.IDLE, null)
+                VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
             }
         }
     }

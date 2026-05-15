@@ -5,9 +5,11 @@ import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.Context
 import android.content.Intent
+import android.view.View
 import android.widget.RemoteViews
 import com.voicedrop.R
 import com.voicedrop.service.PermissionActivity
+import com.voicedrop.service.ServiceState
 import com.voicedrop.service.VoiceDropService
 import com.voicedrop.storage.AppDatabase
 import kotlinx.coroutines.CoroutineScope
@@ -59,44 +61,53 @@ class VoiceDropWidgetProvider : AppWidgetProvider() {
             widgetId: Int
         ) {
             val contactId = getContactId(context, widgetId)
-            val views = RemoteViews(context.packageName, R.layout.widget_voicedrop)
+            val serviceState = ServiceState.recordingState.value
 
             if (contactId == null) {
-                views.setTextViewText(R.id.widget_label, context.getString(R.string.widget_unbound))
-                views.setOnClickPendingIntent(
-                    R.id.widget_root,
-                    buildLauncherPendingIntent(context, widgetId)
+                val views = renderUnbound(context, widgetId)
+                appWidgetManager.updateAppWidget(widgetId, views)
+                return
+            }
+
+            val isRecordingThisContact =
+                serviceState.state == ServiceState.State.RECORDING &&
+                    serviceState.activeContactId == contactId
+
+            if (isRecordingThisContact) {
+                val views = renderRecording(
+                    context,
+                    widgetId,
+                    serviceState.startedAtElapsedRealtime,
                 )
                 appWidgetManager.updateAppWidget(widgetId, views)
                 return
             }
 
-            views.setTextViewText(R.id.widget_label, context.getString(R.string.widget_loading))
-            views.setOnClickPendingIntent(
-                R.id.widget_root,
-                buildRecordPendingIntent(context, widgetId, contactId)
+            // Idle render: show loading first, then resolve the contact name asynchronously.
+            val placeholder = renderIdle(
+                context = context,
+                widgetId = widgetId,
+                contactId = contactId,
+                label = context.getString(R.string.widget_loading),
             )
-            appWidgetManager.updateAppWidget(widgetId, views)
+            appWidgetManager.updateAppWidget(widgetId, placeholder)
 
             scope.launch {
                 val db = AppDatabase.getInstance(context)
                 val contact = db.contactDao().getById(contactId)
-                val refreshed = RemoteViews(context.packageName, R.layout.widget_voicedrop)
-                if (contact == null) {
-                    refreshed.setTextViewText(
-                        R.id.widget_label,
-                        context.getString(R.string.widget_contact_missing)
-                    )
-                    refreshed.setOnClickPendingIntent(
-                        R.id.widget_root,
-                        buildLauncherPendingIntent(context, widgetId)
-                    )
+                // Re-check state — service could have flipped to recording while we were loading.
+                val nowState = ServiceState.recordingState.value
+                if (nowState.state == ServiceState.State.RECORDING &&
+                    nowState.activeContactId == contactId
+                ) {
+                    val v = renderRecording(context, widgetId, nowState.startedAtElapsedRealtime)
+                    appWidgetManager.updateAppWidget(widgetId, v)
+                    return@launch
+                }
+                val refreshed = if (contact == null) {
+                    renderMissing(context, widgetId)
                 } else {
-                    refreshed.setTextViewText(R.id.widget_label, contact.name)
-                    refreshed.setOnClickPendingIntent(
-                        R.id.widget_root,
-                        buildRecordPendingIntent(context, widgetId, contactId)
-                    )
+                    renderIdle(context, widgetId, contactId, contact.name)
                 }
                 appWidgetManager.updateAppWidget(widgetId, refreshed)
             }
@@ -109,7 +120,69 @@ class VoiceDropWidgetProvider : AppWidgetProvider() {
             for (id in ids) updateWidget(context, mgr, id)
         }
 
-        private fun buildRecordPendingIntent(
+        private fun renderUnbound(context: Context, widgetId: Int): RemoteViews {
+            val views = RemoteViews(context.packageName, R.layout.widget_voicedrop)
+            views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_voicedrop_bg)
+            views.setImageViewResource(R.id.widget_icon, R.drawable.ic_widget_droplet)
+            views.setViewVisibility(R.id.widget_label, View.VISIBLE)
+            views.setViewVisibility(R.id.widget_timer, View.GONE)
+            views.setChronometer(R.id.widget_timer, 0L, null, false)
+            views.setTextViewText(R.id.widget_label, context.getString(R.string.widget_unbound))
+            views.setOnClickPendingIntent(R.id.widget_root, buildLauncherPendingIntent(context, widgetId))
+            return views
+        }
+
+        private fun renderMissing(context: Context, widgetId: Int): RemoteViews {
+            val views = RemoteViews(context.packageName, R.layout.widget_voicedrop)
+            views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_voicedrop_bg)
+            views.setImageViewResource(R.id.widget_icon, R.drawable.ic_widget_droplet)
+            views.setViewVisibility(R.id.widget_label, View.VISIBLE)
+            views.setViewVisibility(R.id.widget_timer, View.GONE)
+            views.setChronometer(R.id.widget_timer, 0L, null, false)
+            views.setTextViewText(R.id.widget_label, context.getString(R.string.widget_contact_missing))
+            views.setOnClickPendingIntent(R.id.widget_root, buildLauncherPendingIntent(context, widgetId))
+            return views
+        }
+
+        private fun renderIdle(
+            context: Context,
+            widgetId: Int,
+            contactId: String,
+            label: String,
+        ): RemoteViews {
+            val views = RemoteViews(context.packageName, R.layout.widget_voicedrop)
+            views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_voicedrop_bg)
+            views.setImageViewResource(R.id.widget_icon, R.drawable.ic_widget_droplet)
+            views.setViewVisibility(R.id.widget_label, View.VISIBLE)
+            views.setViewVisibility(R.id.widget_timer, View.GONE)
+            views.setChronometer(R.id.widget_timer, 0L, null, false)
+            views.setTextViewText(R.id.widget_label, label)
+            views.setOnClickPendingIntent(
+                R.id.widget_root,
+                buildRecordStartPendingIntent(context, widgetId, contactId)
+            )
+            return views
+        }
+
+        private fun renderRecording(
+            context: Context,
+            widgetId: Int,
+            startedAtElapsedRealtime: Long,
+        ): RemoteViews {
+            val views = RemoteViews(context.packageName, R.layout.widget_voicedrop)
+            views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_voicedrop_bg_recording)
+            views.setImageViewResource(R.id.widget_icon, R.drawable.ic_widget_stop)
+            views.setViewVisibility(R.id.widget_label, View.GONE)
+            views.setViewVisibility(R.id.widget_timer, View.VISIBLE)
+            views.setChronometer(R.id.widget_timer, startedAtElapsedRealtime, null, true)
+            views.setOnClickPendingIntent(
+                R.id.widget_root,
+                buildRecordStopPendingIntent(context, widgetId)
+            )
+            return views
+        }
+
+        private fun buildRecordStartPendingIntent(
             context: Context,
             widgetId: Int,
             contactId: String
@@ -121,7 +194,23 @@ class VoiceDropWidgetProvider : AppWidgetProvider() {
             }
             return PendingIntent.getActivity(
                 context,
-                widgetId,
+                widgetId * 2,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
+        private fun buildRecordStopPendingIntent(
+            context: Context,
+            widgetId: Int,
+        ): PendingIntent {
+            val intent = Intent(context, PermissionActivity::class.java).apply {
+                action = VoiceDropService.ACTION_RECORD_STOP
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            }
+            return PendingIntent.getActivity(
+                context,
+                widgetId * 2 + 1,
                 intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
