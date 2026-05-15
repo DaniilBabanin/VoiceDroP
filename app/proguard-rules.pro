@@ -60,6 +60,9 @@
 -keep class com.voicedrop.service.TalkTileService { *; }
 -keep class com.voicedrop.service.NotificationActionReceiver { *; }
 -keep class com.voicedrop.service.AutoDeleteWorker { *; }
+-keep class com.voicedrop.ui.VoiceDropWidgetProvider { *; }
+-keep class com.voicedrop.ui.VoiceDropWidgetProvider$Companion { *; }
+-keep class com.voicedrop.ui.VoiceDropWidgetConfigActivity { *; }
 
 # Coroutines
 -keepnames class kotlinx.coroutines.internal.MainDispatcherFactory { *; }

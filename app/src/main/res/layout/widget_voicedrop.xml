@@ -12,7 +12,7 @@
         android:id="@+id/widget_icon"
         android:layout_width="32dp"
         android:layout_height="32dp"
-        android:src="@drawable/ic_tile_idle"
+        android:src="@drawable/ic_widget_droplet"
         android:contentDescription="@string/app_name"/>
 
     <TextView

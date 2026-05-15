@@ -7,6 +7,7 @@
     android:updatePeriodMillis="0"
     android:initialLayout="@layout/widget_voicedrop"
     android:previewLayout="@layout/widget_voicedrop"
+    android:previewImage="@drawable/ic_widget_droplet"
     android:configure="com.voicedrop.ui.VoiceDropWidgetConfigActivity"
     android:resizeMode="none"
     android:widgetCategory="home_screen"
