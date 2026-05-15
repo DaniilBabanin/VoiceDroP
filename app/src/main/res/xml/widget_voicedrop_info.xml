@@ -8,6 +8,7 @@
     android:initialLayout="@layout/widget_voicedrop"
     android:previewImage="@drawable/ic_widget_droplet"
     android:configure="com.voicedrop.ui.VoiceDropWidgetConfigActivity"
+    android:widgetFeatures="reconfigurable|configuration_optional"
     android:resizeMode="none"
     android:widgetCategory="home_screen"
     android:description="@string/widget_description"/>

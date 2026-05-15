@@ -130,7 +130,7 @@ class VoiceDropWidgetProvider : AppWidgetProvider() {
             views.setViewVisibility(R.id.widget_timer, View.GONE)
             views.setChronometer(R.id.widget_timer, 0L, null, false)
             views.setTextViewText(R.id.widget_label, context.getString(R.string.widget_unbound))
-            views.setOnClickPendingIntent(R.id.widget_root, buildLauncherPendingIntent(context, widgetId))
+            views.setOnClickPendingIntent(R.id.widget_root, buildConfigurePendingIntent(context, widgetId))
             return views
         }
 
@@ -142,7 +142,7 @@ class VoiceDropWidgetProvider : AppWidgetProvider() {
             views.setViewVisibility(R.id.widget_timer, View.GONE)
             views.setChronometer(R.id.widget_timer, 0L, null, false)
             views.setTextViewText(R.id.widget_label, context.getString(R.string.widget_contact_missing))
-            views.setOnClickPendingIntent(R.id.widget_root, buildLauncherPendingIntent(context, widgetId))
+            views.setOnClickPendingIntent(R.id.widget_root, buildConfigurePendingIntent(context, widgetId))
             return views
         }
 
@@ -226,9 +226,10 @@ class VoiceDropWidgetProvider : AppWidgetProvider() {
             )
         }
 
-        private fun buildLauncherPendingIntent(context: Context, widgetId: Int): PendingIntent {
-            val intent = Intent(context, ContactListActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        private fun buildConfigurePendingIntent(context: Context, widgetId: Int): PendingIntent {
+            val intent = Intent(context, VoiceDropWidgetConfigActivity::class.java).apply {
+                putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
             }
             return PendingIntent.getActivity(
                 context,
