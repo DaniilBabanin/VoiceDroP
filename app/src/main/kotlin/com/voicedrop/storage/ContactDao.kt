@@ -19,4 +19,7 @@ interface ContactDao {
 
     @Query("SELECT * FROM contacts ORDER BY addedAt DESC")
     fun getAll(): Flow<List<ContactEntity>>
+
+    @Query("SELECT * FROM contacts ORDER BY addedAt DESC")
+    suspend fun getAllList(): List<ContactEntity>
 }

@@ -68,4 +68,12 @@
         <item quantity="one">%d day</item>
         <item quantity="other">%d days</item>
     </plurals>
+
+    <string name="widget_label">VoiceDrop</string>
+    <string name="widget_description">Tap to send a voice drop to a chosen contact.</string>
+    <string name="widget_pick_contact_title">Pick a contact for this widget</string>
+    <string name="widget_empty_hint">No contacts yet. Pair one in the app, then add the widget.</string>
+    <string name="widget_unbound">Tap to set</string>
+    <string name="widget_loading">…</string>
+    <string name="widget_contact_missing">?</string>
 </resources>

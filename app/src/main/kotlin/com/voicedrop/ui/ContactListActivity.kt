@@ -185,6 +185,7 @@ class ContactListActivity : AppCompatActivity() {
             File(filesDir, "messages/${contact.id}").listFiles()?.forEach { secureDelete(it) }
         }
         repository.deleteContact(contact)
+        VoiceDropWidgetProvider.refreshAll(this@ContactListActivity)
     }
 
     private fun secureDelete(file: File) {
