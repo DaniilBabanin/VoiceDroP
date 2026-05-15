@@ -15,8 +15,8 @@ android {
         applicationId = "com.voicedrop"
         minSdk = 26
         targetSdk = 36
-        versionCode = 51
-        versionName = "1.1.0.9"
+        versionCode = 52
+        versionName = "1.1.0.10"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -60,6 +60,9 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.aboutlibraries)
+    implementation(libs.markwon.core)
+    implementation(libs.markwon.linkify)
+    implementation(libs.markwon.ext.tables)
 
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
@@ -72,4 +75,15 @@ dependencies {
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.room.testing)
+}
+
+// Bundle the repo-root PRIVACY.md into assets so the in-app viewer
+// (PrivacyPolicyActivity) stays in sync with the canonical document.
+val copyPrivacyPolicy by tasks.registering(Copy::class) {
+    from(rootProject.file("PRIVACY.md"))
+    into(layout.projectDirectory.dir("src/main/assets"))
+}
+
+tasks.named("preBuild") {
+    dependsOn(copyPrivacyPolicy)
 }

@@ -11,3 +11,6 @@ local.properties
 keystore.jks
 *.jks
 app/build/
+
+# Generated at build time by the copyPrivacyPolicy task in app/build.gradle.kts.
+app/src/main/assets/PRIVACY.md

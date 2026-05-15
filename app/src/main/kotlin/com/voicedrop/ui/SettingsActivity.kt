@@ -1,8 +1,6 @@
 package com.voicedrop.ui
 
-import android.content.ActivityNotFoundException
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.view.MenuItem
@@ -79,12 +77,7 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.button_privacy_policy).setOnClickListener {
-            val url = getString(R.string.privacy_policy_url)
-            try {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-            } catch (e: ActivityNotFoundException) {
-                Toast.makeText(this, url, Toast.LENGTH_LONG).show()
-            }
+            startActivity(Intent(this, PrivacyPolicyActivity::class.java))
         }
 
         findViewById<Button>(R.id.button_open_source_licenses).setOnClickListener {
