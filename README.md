@@ -1,8 +1,8 @@
 # VoiceDrop
 
-Async, walkie-talkie-style voice messaging for Android. No accounts, no server-side audio storage, E2E encrypted (X25519 → HKDF → XChaCha20-Poly1305). Private keys stay in AndroidKeyStore.
+Async, walkie-talkie-style voice messaging for Android. No accounts, no plaintext on the server, E2E encrypted (X25519 → HKDF → XChaCha20-Poly1305). Private keys stay in AndroidKeyStore.
 
-Messages deliver over LAN (mDNS), STUN, Cloudflare Worker relay, or outbox queue. The worker handles signaling and relay queuing only; it never touches audio.
+Messages deliver over LAN (mDNS), STUN, Cloudflare Worker relay, or outbox queue. The worker handles signaling and relays encrypted blobs only; it never sees plaintext audio or decryption keys, and relayed blobs are deleted on recipient pickup.
 
 ---
 
@@ -63,7 +63,7 @@ Message history: tap a contact. Delete contact: swipe left. Auto-delete timer (N
 
 ## Architecture
 
-Delivery: LAN mDNS, STUN hole-punch, Cloudflare Worker store-and-forward relay, outbox queue when offline. The worker never sees plaintext, audio, or contact data.
+Delivery: LAN mDNS, STUN hole-punch, Cloudflare Worker store-and-forward relay, outbox queue when offline. The worker sees ciphertext blobs and routing fingerprints — never plaintext audio, decryption keys, or display names; relayed blobs are deleted on recipient pickup.
 
 Crypto: X25519 ECDH → HKDF-SHA256 → XChaCha20-Poly1305. Storage: Room DB + encrypted blobs in `filesDir/messages/`.
 
@@ -87,4 +87,5 @@ To generate a keystore: `keytool -genkey -v -keystore release.keystore -alias vo
 
 - [PRIVACY.md](PRIVACY.md) — what data the app stores, what metadata third parties (Cloudflare, Google STUN) see, and the limits of deletion. Linked from in-app Settings.
 - [SECURITY.md](SECURITY.md) — threat model and vulnerability reporting.
-- [EXPORT.md](EXPORT.md) — US export-control terms. **Do not download or install if you are located in or a national of Cuba, Iran, North Korea, Syria, or the Crimea / DNR / LNR regions of Ukraine, or if you are on a US restricted-party list.**
+
+VoiceDrop uses strong cryptography (XChaCha20-Poly1305, X25519). Users are responsible for compliance with any import, export, or use restrictions that apply in their own jurisdiction.

@@ -22,7 +22,7 @@ You will receive an acknowledgement within 48 hours and a resolution timeline wi
 VoiceDrop is designed with the following security properties:
 
 - **End-to-end encryption**: All voice messages are encrypted with XChaCha20-Poly1305 using a per-contact session key derived via X25519 ECDH + HKDF-SHA256. The signaling server never sees plaintext.
-- **No server-side message storage**: The Cloudflare Worker is signaling-only. Voice data is never relayed or stored by the server.
+- **No plaintext on the server**: Voice data is end-to-end encrypted before it leaves the device. The Cloudflare Worker handles signaling and store-and-forward relay of ciphertext blobs only — it never sees plaintext audio or decryption keys, and relayed ciphertext is deleted from Durable Object storage on recipient pickup.
 - **Local key protection**: The X25519 private key is wrapped with an AES-256-GCM key stored in the Android Keystore hardware-backed TEE/StrongBox.
 - **Verified pairing**: Contact exchange requires a 4-emoji HMAC-SHA256 out-of-band verification ceremony to prevent MITM during pairing.
 - **No accounts**: No user accounts, no phone numbers, no email addresses are collected.
@@ -31,9 +31,7 @@ VoiceDrop is designed with the following security properties:
 
 ## Export Control Notice
 
-This software uses strong cryptography (X25519, XChaCha20-Poly1305, AES-256-GCM). Export, re-export, or transfer of this software may be subject to export control laws in your jurisdiction, including the U.S. Export Administration Regulations (EAR). It is your responsibility to comply with applicable export control laws before downloading, using, or distributing this software.
-
-This software is classified under ECCN 5D002 and is eligible for the TSU exception under EAR 740.13(e) as publicly available encryption source code.
+This software uses strong cryptography (X25519, XChaCha20-Poly1305, AES-256-GCM). Export, re-export, or transfer of this software may be subject to export control laws in your jurisdiction. It is your responsibility to comply with applicable export control laws before downloading, using, or distributing this software.
 
 ## Cryptographic Libraries
 

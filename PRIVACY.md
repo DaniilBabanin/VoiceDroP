@@ -8,7 +8,7 @@ VoiceDrop is an account-free, end-to-end-encrypted voice messaging app. There is
 
 If you do not agree with this policy, do not install or use VoiceDrop.
 
-For US export-control disclosures, see [EXPORT.md](EXPORT.md). For security vulnerability reporting, see [SECURITY.md](SECURITY.md).
+For security vulnerability reporting and the cryptography export notice, see [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -218,5 +218,3 @@ The full revision history is visible in the Git log for this file.
 ## 14. Disclaimer
 
 VoiceDrop is open-source software distributed under the terms of the LICENSE file in this repository. The software is provided "as is" without warranty of any kind. This privacy policy describes the design of the software; it is not a contract and does not create rights against the developer beyond those that already exist under applicable law in your jurisdiction.
-
-For US export-control terms, see [EXPORT.md](EXPORT.md).
