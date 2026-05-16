@@ -88,7 +88,13 @@ object FrameCodec {
         UNKNOWN_FRAME_KIND,
         BAD_LAYOUT,
         ZERO_DH_PUB,
-        LOW_ORDER_DH_PUB
+        LOW_ORDER_DH_PUB,
+
+        /** RESET frame with non-zero bytes in the tail half of the dhPub slot (dr12 §6.1). */
+        RESET_DH_PUB_TAIL_NONZERO,
+
+        /** RESET frame with non-zero `pn` slot (dr12 §6.1 — slot unused on RESET). */
+        RESET_PN_NONZERO
     }
 
     data class DecodedFrame(
@@ -193,6 +199,18 @@ object FrameCodec {
         val n = buf.int
         val uuid = ByteArray(UUID_BYTES).also { buf.get(it) }
         val timestampMs = buf.long
+
+        if (kind == FRAME_KIND_RESET) {
+            // dhPub slot is repurposed as `resetNonce:16 || zeros:16` (dr12 §6.1).
+            // Reject non-zero tail bytes — defense against future field-reuse confusion.
+            for (i in 16 until DH_PUB_BYTES) {
+                if (dhPub[i].toInt() != 0) {
+                    return DecodeResult.Drop(DropReason.RESET_DH_PUB_TAIL_NONZERO)
+                }
+            }
+            // The `pn` slot is unused on RESET; reject non-zero.
+            if (pn != 0) return DecodeResult.Drop(DropReason.RESET_PN_NONZERO)
+        }
 
         val ciphertextSize = bytes.size - AAD_LEN
         val ciphertext = ByteArray(ciphertextSize).also { buf.get(it) }
