@@ -186,7 +186,7 @@ object FrameCodec {
 
         if (kind == FRAME_KIND_DATA || kind == FRAME_KIND_RECEIPT) {
             if (isAllZero(dhPub)) return DecodeResult.Drop(DropReason.ZERO_DH_PUB)
-            if (isLowOrder(dhPub)) return DecodeResult.Drop(DropReason.LOW_ORDER_DH_PUB)
+            if (isLowOrderX25519(dhPub)) return DecodeResult.Drop(DropReason.LOW_ORDER_DH_PUB)
         }
 
         val pn = buf.int
@@ -226,13 +226,18 @@ object FrameCodec {
         return aead.decrypt(ZERO_NONCE, frame.ciphertext, frame.aad)
     }
 
-    private fun isAllZero(bytes: ByteArray): Boolean {
+    fun isAllZero(bytes: ByteArray): Boolean {
         var acc = 0
         for (b in bytes) acc = acc or (b.toInt() and 0xff)
         return acc == 0
     }
 
-    private fun isLowOrder(dhPub: ByteArray): Boolean {
+    /**
+     * X25519 low-order point check. Exposed so the ratchet layer ([dr6]) can
+     * apply belt-and-braces validation before any `computeSharedSecret` call.
+     * Single source of truth: the small-order table lives only here.
+     */
+    fun isLowOrderX25519(dhPub: ByteArray): Boolean {
         // X25519 masks bit 255 of the public key on input. Compare after the
         // same mask so attacker-supplied high-bit flips don't slip past us.
         val masked = dhPub.copyOf()
