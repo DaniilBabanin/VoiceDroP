@@ -31,6 +31,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun contactDao(): ContactDao
     abstract fun messageDao(): MessageDao
     abstract fun pendingActionDao(): PendingActionDao
+    abstract fun pendingOutboundFrameDao(): PendingOutboundFrameDao
 
     class Converters {
         @TypeConverter
