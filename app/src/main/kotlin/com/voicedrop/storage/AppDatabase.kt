@@ -32,6 +32,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun pendingActionDao(): PendingActionDao
     abstract fun pendingOutboundFrameDao(): PendingOutboundFrameDao
+    abstract fun skippedMessageKeyDao(): SkippedMessageKeyDao
 
     class Converters {
         @TypeConverter

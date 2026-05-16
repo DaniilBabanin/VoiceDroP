@@ -8,6 +8,7 @@ import com.voicedrop.network.FrameCodec
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.ContactEntity
 import com.voicedrop.storage.MessageEntity
+import com.voicedrop.storage.PendingOutboundFrameEntity
 import com.voicedrop.storage.TransportType
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -34,7 +35,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 
 /**
- * DR7 — `PersistenceInvariantsTest` (encrypt-path subset).
+ * DR7 + DR8 — `PersistenceInvariantsTest` (encrypt-path + decrypt-path).
  *
  * The mutex-regression test `concurrent_twoEncryptsOnSameContact_noKeyReuse` is
  * load-bearing — see [dr7-encrypt-path.md] §8.3 and [00-overview.md §4]. Do not
@@ -225,6 +226,230 @@ class PersistenceInvariantsTest {
         assertEquals(N, db.pendingOutboundFrameDao().countForContact(pair.aliceContactId))
     }
 
+    // ---------- DR8: decrypt path ----------
+
+    /**
+     * §8.2 — re-delivered DATA is dedup'd against the messages table. The
+     * receiving chain MUST NOT re-advance, but a fresh RECEIPT MUST be enqueued
+     * (to recover from a lost prior RECEIPT). The sending chain (Ns) advances
+     * once per re-delivery because RECEIPT consumes a chain step.
+     */
+    @Test
+    fun decrypt_idempotentByUuid_butReReceiptEnqueued() = runBlocking {
+        val pair = bootstrapPair()
+        // Alice's side persists for her encrypt path.
+        seedAliceContact(pair)
+        // Bob's side persists for the decrypt path. Bob is the receiver here.
+        seedBobContact(pair)
+
+        // Alice encrypts one DATA frame.
+        val aliceTransmitted = mutableListOf<ByteArray>()
+        val aliceSender = sender(pair, transmit = { _, b -> aliceTransmitted += b })
+        aliceSender.encryptAndSend(pair.aliceContactId, "hello-bob".toByteArray()) { hex, _, now ->
+            outboundMessage(hex, pair.aliceContactId, now)
+        }
+        val wireFromAlice = aliceTransmitted.single()
+        val decoded = (FrameCodec.decode(wireFromAlice) as FrameCodec.DecodeResult.Ok).frame
+
+        // First receive: ratchet advances; RECEIPT lands in outbox.
+        val receiver = receiver(pair)
+        val first = receiver.receive(pair.bobContactId, decoded) { plaintext, hex, _, ts ->
+            inboundMessage(hex, pair.bobContactId, plaintext, ts)
+        }
+        assertTrue(first is RatchetDecryptAndPersist.Result.Delivered)
+        val bobAfterFirst = db.contactDao().getById(pair.bobContactId)!!
+        assertEquals("nr advanced once", 1, bobAfterFirst.nr)
+        assertEquals("ns advanced once for the RECEIPT", 1, bobAfterFirst.ns)
+        assertEquals(1, db.pendingOutboundFrameDao().countForContact(pair.bobContactId))
+        assertEquals(1, db.messageDao().getByContactList(pair.bobContactId).size)
+
+        // Second receive of the SAME wire frame: dedup branch.
+        val dup = receiver.receive(pair.bobContactId, decoded) { _, _, _, _ ->
+            fail("buildInboundMessage must not be called on dedup path")
+            throw IllegalStateException("unreachable")
+        }
+        assertTrue(dup is RatchetDecryptAndPersist.Result.DuplicateData)
+
+        val bobAfterDup = db.contactDao().getById(pair.bobContactId)!!
+        assertEquals("nr unchanged — receiving chain MUST NOT re-advance", bobAfterFirst.nr, bobAfterDup.nr)
+        assertEquals("ns DID advance once more (re-enqueued RECEIPT)", 2, bobAfterDup.ns)
+        assertEquals("a second RECEIPT row exists", 2, db.pendingOutboundFrameDao().countForContact(pair.bobContactId))
+        assertEquals("messages table still has exactly one row", 1, db.messageDao().getByContactList(pair.bobContactId).size)
+
+        // Both RECEIPT outbox rows must ack the SAME DATA UUID, but be themselves
+        // distinct frames (distinct frame UUIDs, distinct ciphertexts).
+        val outboxRows = db.pendingOutboundFrameDao().getByContact(pair.bobContactId)
+        assertEquals(2, outboxRows.size)
+        assertEquals(
+            "both RECEIPTs are RECEIPT frames",
+            setOf(PendingOutboundFrameEntity.FRAME_KIND_RECEIPT),
+            outboxRows.map { it.frame_kind }.toSet()
+        )
+        assertTrue(
+            "RECEIPT frame UUIDs distinct",
+            !outboxRows[0].uuid.contentEquals(outboxRows[1].uuid)
+        )
+        val chainPositions = outboxRows.map { row ->
+            val wire = wrapMac.unwrapAndVerify(
+                "pending_outbound_frames.wrapped_frame", row.uuid, row.wrapped_frame, row.frame_hmac
+            )
+            val d = (FrameCodec.decode(wire) as FrameCodec.DecodeResult.Ok).frame
+            assertEquals(FrameCodec.FRAME_KIND_RECEIPT, d.kind)
+            d.n
+        }.toSortedSet()
+        assertEquals("RECEIPT chain positions are 0 and 1 (no key reuse)", sortedSetOf(0, 1), chainPositions)
+    }
+
+    /**
+     * §4.4 clone-then-commit. A frame with valid header but tampered ciphertext
+     * MUST leave the persisted state byte-for-byte identical. The DR14
+     * consecutive-failure heuristic counter ticks up via an UPDATE OUTSIDE the
+     * txn (§8.2) so AEAD-failure churn from an attacker can't lock the DB.
+     */
+    @Test
+    fun aeadFailureLeavesStateUntouched() = runBlocking {
+        val pair = bootstrapPair()
+        seedAliceContact(pair)
+        seedBobContact(pair)
+
+        val transmitted = mutableListOf<ByteArray>()
+        val aliceSender = sender(pair, transmit = { _, b -> transmitted += b })
+        aliceSender.encryptAndSend(pair.aliceContactId, "valid".toByteArray()) { hex, _, now ->
+            outboundMessage(hex, pair.aliceContactId, now)
+        }
+        val goodBytes = transmitted.single()
+
+        // Flip a bit in the ciphertext body. FrameCodec.decode still succeeds
+        // (header structure intact); AEAD verification fails.
+        val badBytes = goodBytes.copyOf().also { bytes ->
+            val ctStart = FrameCodec.AAD_LEN
+            bytes[ctStart] = (bytes[ctStart].toInt() xor 0x01).toByte()
+        }
+        val tampered = (FrameCodec.decode(badBytes) as FrameCodec.DecodeResult.Ok).frame
+
+        val bobBefore = db.contactDao().getById(pair.bobContactId)!!
+        val receiver = receiver(pair)
+        try {
+            receiver.receive(pair.bobContactId, tampered) { _, _, _, _ ->
+                fail("buildInboundMessage must not be called on AEAD failure")
+                throw IllegalStateException("unreachable")
+            }
+            fail("expected RatchetCryptoFailure")
+        } catch (_: RatchetCryptoFailure) { /* ok */ }
+
+        val bobAfter = db.contactDao().getById(pair.bobContactId)!!
+        // Persisted ratchet state byte-identical. Wrap IVs are random, so byte
+        // equality on rk_wrapped is itself proof that saveRatchetState wasn't run.
+        assertEquals(bobBefore.ns, bobAfter.ns)
+        assertEquals(bobBefore.nr, bobAfter.nr)
+        assertEquals(bobBefore.pn, bobAfter.pn)
+        assertArrayEquals(bobBefore.dhs_pub, bobAfter.dhs_pub)
+        assertArrayEquals(bobBefore.dhr_pub, bobAfter.dhr_pub)
+        assertArrayEquals(bobBefore.rk_wrapped, bobAfter.rk_wrapped)
+        assertArrayEquals(bobBefore.rk_hmac, bobAfter.rk_hmac)
+        assertEquals(bobBefore.ckr_wrapped, bobAfter.ckr_wrapped)
+        // No skipped-key rows leaked.
+        assertEquals(0, db.skippedMessageKeyDao().countForContact(pair.bobContactId))
+        // No outbox row (no RECEIPT enqueued).
+        assertEquals(0, db.pendingOutboundFrameDao().countForContact(pair.bobContactId))
+        // No message row.
+        assertEquals(0, db.messageDao().getByContactList(pair.bobContactId).size)
+        // §8.2 counter ticked OUTSIDE the txn.
+        assertEquals(1, bobAfter.consecutive_aead_failures)
+    }
+
+    /**
+     * §8.3 mutex spans encrypt AND decrypt — DATA-receive (which enqueues a
+     * RECEIPT, consuming a sending-chain step) racing against an outbound DATA
+     * send must serialize. Assertion: post-batch Ns equals the count of ops
+     * that consumed a sending-chain step, and every outbox row has a distinct
+     * `n`. A duplicate `n` would mean key-reuse under the zero AEAD nonce.
+     */
+    @Test
+    fun concurrent_encryptAndReceiptEnqueue_serializedByMutex() = runBlocking {
+        val pair = bootstrapPair()
+        seedAliceContact(pair)
+        seedBobContact(pair)
+
+        // Pre-generate Alice -> Bob frames so we can replay them on Bob in any order.
+        val aliceTransmitted = java.util.Collections.synchronizedList(mutableListOf<ByteArray>())
+        val aliceSender = sender(pair, transmit = { _, b -> aliceTransmitted += b })
+        val nInbound = 4
+        for (i in 0 until nInbound) {
+            aliceSender.encryptAndSend(pair.aliceContactId, "alice-$i".toByteArray()) { hex, _, now ->
+                outboundMessage(hex, pair.aliceContactId, now)
+            }
+        }
+        val decoded = aliceTransmitted.map { (FrameCodec.decode(it) as FrameCodec.DecodeResult.Ok).frame }
+
+        // Bob must decrypt at least the first frame BEFORE he can send (the role
+        // wakes up his state.dhrPub + state.cks). Process frame[0] serially.
+        val bobReceiver = receiver(pair)
+        bobReceiver.receive(pair.bobContactId, decoded[0]) { plaintext, hex, _, ts ->
+            inboundMessage(hex, pair.bobContactId, plaintext, ts)
+        }
+
+        // From here: 3 more inbound decrypts AND 3 Bob-originated sends racing.
+        val bobOutboundTransmitted = java.util.Collections.synchronizedList(mutableListOf<ByteArray>())
+        val bobSender = RatchetEncryptAndSend(
+            db, wrapMac, pair.bobFingerprint
+        ) { _, bytes -> bobOutboundTransmitted += bytes }
+        val nOutbound = 3
+        val nInboundParallel = 3  // frames[1..3]
+        val totalOps = nInboundParallel + nOutbound
+
+        val jobs = buildList<kotlinx.coroutines.Deferred<Any>> {
+            for (i in 1..nInboundParallel) add(
+                async(Dispatchers.IO) {
+                    bobReceiver.receive(pair.bobContactId, decoded[i]) { plaintext, hex, _, ts ->
+                        inboundMessage(hex, pair.bobContactId, plaintext, ts)
+                    }
+                }
+            )
+            for (i in 0 until nOutbound) add(
+                async(Dispatchers.IO) {
+                    bobSender.encryptAndSend(pair.bobContactId, "bob-$i".toByteArray()) { hex, _, now ->
+                        outboundMessage(hex, pair.bobContactId, now)
+                    }
+                }
+            )
+        }
+        jobs.awaitAll()
+
+        // Bob's first frame[0] consumed one ns step (for its RECEIPT). Each of
+        // the parallel inbound frames consumes one more (RECEIPT). Each of the
+        // parallel sends consumes one more (DATA). Total ns = 1 + totalOps.
+        val bobAfter = db.contactDao().getById(pair.bobContactId)!!
+        val expectedNs = 1 + totalOps
+        assertEquals("ns advanced exactly once per send-chain consumer", expectedNs, bobAfter.ns)
+        assertEquals("nr advanced once per inbound DATA", nInbound, bobAfter.nr)
+
+        // Inspect Bob's outbox: 1 RECEIPT (frame[0]) + 3 RECEIPTs (parallel) + 3 DATAs (parallel) = 7 rows.
+        val outbox = db.pendingOutboundFrameDao().getByContact(pair.bobContactId)
+        assertEquals(expectedNs, outbox.size)
+
+        // No (dhPub, n) collision. All Bob-outbox frames share Bob's DHs.pub
+        // since neither send nor inbound-receipt rotates his DHs without an
+        // intervening dhRatchetReceive on a fresh peer DH — and Alice didn't
+        // rotate in this batch. So they must form a distinct set on `n` alone.
+        val outboxFrames = outbox.map { row ->
+            val wire = wrapMac.unwrapAndVerify(
+                "pending_outbound_frames.wrapped_frame", row.uuid, row.wrapped_frame, row.frame_hmac
+            )
+            (FrameCodec.decode(wire) as FrameCodec.DecodeResult.Ok).frame
+        }
+        val dhPub0 = outboxFrames[0].dhPub
+        for (f in outboxFrames) assertArrayEquals(
+            "all Bob's outbox frames must share his DHs.pub (no mid-batch rotation)", dhPub0, f.dhPub
+        )
+        val ns = outboxFrames.map { it.n }.toSortedSet()
+        assertEquals(
+            "distinct chain positions, no key reuse",
+            (0 until expectedNs).toSet(),
+            ns
+        )
+    }
+
     // ---------- Test fixtures ----------
 
     private class Pair(
@@ -303,6 +528,10 @@ class PersistenceInvariantsTest {
     ): RatchetEncryptAndSend =
         RatchetEncryptAndSend(db, wrapMac, ownFp, transmit)
 
+    /** Decrypt-side wired up as Bob (DR8 entry under his fingerprint). */
+    private fun receiver(pair: Pair, ownFp: ByteArray = pair.bobFingerprint): RatchetDecryptAndPersist =
+        RatchetDecryptAndPersist(db, wrapMac, ownFp)
+
     private fun outboundMessage(uuidHex: String, contactId: String, now: Long): MessageEntity =
         MessageEntity(
             uuid = uuidHex,
@@ -318,6 +547,28 @@ class PersistenceInvariantsTest {
             createdAt = now,
             sentAt = 0L,
             deliveredAt = 0L
+        )
+
+    private fun inboundMessage(
+        uuidHex: String,
+        contactId: String,
+        plaintext: ByteArray,
+        wireTimestampMs: Long
+    ): MessageEntity =
+        MessageEntity(
+            uuid = uuidHex,
+            contactId = contactId,
+            direction = MessageEntity.DIRECTION_INBOUND,
+            state = MessageEntity.STATE_DELIVERED,
+            transport = TransportType.UNKNOWN,
+            encryptedFilePath = null,
+            durationMs = plaintext.size,
+            deleteAfterMs = 0L,
+            scheduledDeleteAt = 0L,
+            transcription = null,
+            createdAt = wireTimestampMs,
+            sentAt = 0L,
+            deliveredAt = wireTimestampMs
         )
 
     /**

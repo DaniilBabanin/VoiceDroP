@@ -167,25 +167,40 @@ class RatchetState(
 }
 
 /**
- * In-memory skipped-message-key store. Indexed by `(dhPub, n)`. The Room-backed
- * impl in [dr9] has the same API surface plus a 7-day expiry sweep and a
- * 2000-entry per-contact FIFO cap.
+ * Backing store for out-of-order ratchet message keys. Keyed by `(dhPub, n)`.
  *
- * For DR6 unit tests we use this plain map; DR8 swaps the backing store.
+ * Two implementations:
+ *   - [SkippedKeyMap] — in-memory `HashMap`, used by DR6 unit tests.
+ *   - [com.voicedrop.crypto.TxnSkippedKeyStore] — Room-backed, scoped to a
+ *     single contact + active SQLite transaction. Used by DR8's decrypt path.
+ *
+ * `Ratchet.decrypt` calls `put` / `remove` ONLY after AEAD success; the
+ * backing store can therefore mirror writes 1:1 to a SQLite txn that rolls back
+ * on AEAD failure without the store needing its own staging buffer.
  */
-class SkippedKeyMap {
+interface SkippedKeyStore {
+    fun get(dhPub: ByteArray, n: Int): ByteArray?
+    fun put(dhPub: ByteArray, n: Int, mk: ByteArray)
+    fun remove(dhPub: ByteArray, n: Int): Boolean
+}
+
+/**
+ * In-memory [SkippedKeyStore]. The Room-backed impl in [dr8] / [dr9] has the
+ * same surface plus a 7-day expiry sweep and a 2000-entry per-contact FIFO cap.
+ */
+class SkippedKeyMap : SkippedKeyStore {
     private val map: MutableMap<String, ByteArray> = HashMap()
 
-    fun get(dhPub: ByteArray, n: Int): ByteArray? = map[key(dhPub, n)]
+    override fun get(dhPub: ByteArray, n: Int): ByteArray? = map[key(dhPub, n)]
 
-    fun put(dhPub: ByteArray, n: Int, mk: ByteArray) {
+    override fun put(dhPub: ByteArray, n: Int, mk: ByteArray) {
         require(dhPub.size == 32) { "dhPub must be 32 bytes" }
         require(mk.size == 32) { "mk must be 32 bytes" }
         require(n >= 0) { "n must be non-negative" }
         map[key(dhPub, n)] = mk
     }
 
-    fun remove(dhPub: ByteArray, n: Int): Boolean = map.remove(key(dhPub, n)) != null
+    override fun remove(dhPub: ByteArray, n: Int): Boolean = map.remove(key(dhPub, n)) != null
 
     fun size(): Int = map.size
 
@@ -256,7 +271,7 @@ object Ratchet {
      */
     fun decrypt(
         state: RatchetState,
-        skipped: SkippedKeyMap,
+        skipped: SkippedKeyStore,
         headerDhPub: ByteArray,
         headerPn: Int,
         headerN: Int,
