@@ -44,9 +44,21 @@ interface SkippedMessageKeyDao {
     )
     fun deleteOldestForContactBlocking(contactId: String, limit: Int): Int
 
+    /**
+     * DR9 §8.5 — process-wide expiry sweep. Fired off `AppDatabase` open in a
+     * background thread; cutoff is `now - SkippedKeyMaintenance.EXPIRY_MS`. Not
+     * contact-scoped: the 7-day rule applies uniformly. Volume is bounded at
+     * 2000 rows × N contacts (~hundreds at most), so a full scan is fine.
+     */
+    @Query("DELETE FROM skipped_message_keys WHERE created_at < :cutoff")
+    fun deleteExpiredBlocking(cutoff: Long): Int
+
     @Query("SELECT * FROM skipped_message_keys WHERE contact_id = :contactId ORDER BY created_at ASC")
     suspend fun getByContact(contactId: String): List<SkippedMessageKeyEntity>
 
     @Query("SELECT COUNT(*) FROM skipped_message_keys WHERE contact_id = :contactId")
     suspend fun countForContact(contactId: String): Int
+
+    @Query("SELECT COUNT(*) FROM skipped_message_keys")
+    suspend fun countAll(): Int
 }

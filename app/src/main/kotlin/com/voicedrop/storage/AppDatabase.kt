@@ -64,8 +64,34 @@ abstract class AppDatabase : RoomDatabase() {
                     )
                         .fallbackToDestructiveMigration(dropAllTables = true)
                         .build()
-                        .also { instance = it }
+                        .also {
+                            instance = it
+                            startSkippedKeyExpirySweep(it)
+                        }
                 }
             }
+
+        /**
+         * DR9 — fire-and-forget 7-day expiry sweep on `skipped_message_keys`. Runs
+         * on a daemon thread so `getInstance` never blocks UI startup. Failures are
+         * swallowed (sweep is a forward-secrecy hygiene step — not load-bearing for
+         * boot; next launch will retry). One sweep per process, single Android
+         * process per [00-overview.md §4].
+         */
+        private fun startSkippedKeyExpirySweep(db: AppDatabase) {
+            Thread({
+                try {
+                    SkippedKeyMaintenance.sweepExpired(
+                        db.skippedMessageKeyDao(),
+                        System.currentTimeMillis()
+                    )
+                } catch (t: Throwable) {
+                    android.util.Log.w("AppDatabase", "skipped-key expiry sweep failed", t)
+                }
+            }, "voicedrop-skipped-key-sweep").apply {
+                isDaemon = true
+                start()
+            }
+        }
     }
 }

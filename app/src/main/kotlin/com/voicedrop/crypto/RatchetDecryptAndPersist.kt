@@ -5,6 +5,7 @@ import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.ContactEntity
 import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.PendingOutboundFrameEntity
+import com.voicedrop.storage.SkippedKeyMaintenance
 import com.voicedrop.storage.SkippedMessageKeyEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.withLock
@@ -256,16 +257,13 @@ class RatchetDecryptAndPersist(
     }
 
     /**
-     * §8.5 cap — FIFO down to 2000 entries on the contact. Single-source
-     * insert-pressure pruner. The 7-day expiry sweep that runs on `AppDatabase`
-     * open is added in [dr9]; here we just trim newly-inserted overflow.
+     * §8.5 cap — FIFO down to [SkippedKeyMaintenance.CAP_PER_CONTACT] on this
+     * contact. Single-source insert-pressure pruner; runs in the same SQLite txn
+     * as the insert. The complementary 7-day expiry sweep fires on
+     * `AppDatabase` open (DR9).
      */
     private fun enforceSkippedCap(contactId: String) {
-        val dao = db.skippedMessageKeyDao()
-        val count = dao.countForContactBlocking(contactId)
-        if (count > SKIPPED_KEYS_CAP_PER_CONTACT) {
-            dao.deleteOldestForContactBlocking(contactId, count - SKIPPED_KEYS_CAP_PER_CONTACT)
-        }
+        SkippedKeyMaintenance.enforceCap(db.skippedMessageKeyDao(), contactId)
     }
 
     // ----- DB helpers (SupportSQLite-level so we stay inside the txn) -----
@@ -397,9 +395,6 @@ class RatchetDecryptAndPersist(
         /** RECEIPT plaintext: `version:1 || ackedUuid:16` = 17 bytes (overview §2). */
         const val RECEIPT_VERSION: Byte = 0x01
         const val RECEIPT_PLAINTEXT_SIZE = 17
-
-        /** §8.5 — FIFO cap. The 7-day expiry sweep is [dr9]'s open-time job. */
-        const val SKIPPED_KEYS_CAP_PER_CONTACT = 2000
 
         private fun parseReceiptAcked(plaintext: ByteArray): ByteArray {
             if (plaintext.size != RECEIPT_PLAINTEXT_SIZE) {
