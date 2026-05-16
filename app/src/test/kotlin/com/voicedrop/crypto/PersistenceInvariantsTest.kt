@@ -23,6 +23,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -448,6 +449,144 @@ class PersistenceInvariantsTest {
             (0 until expectedNs).toSet(),
             ns
         )
+    }
+
+    /**
+     * DR16 §10.1 — `reset_divergentResetNonces_surfaceAsAeadFailure`.
+     *
+     * Force Alice and Bob to bootstrap with different `resetNonce` at the same
+     * `R`. The DR5 nonce-mixing rule says `RK_0` then differs between the two
+     * sides, and the property the test guards is that the divergence surfaces
+     * as an AEAD failure on the FIRST post-reset DATA frame — never as a
+     * silent corruption.
+     *
+     * Setup is synthetic (overwrite `rk` directly via [overwriteRk]) — we do
+     * not drive [ResetReceive] through both sides because:
+     *  - The convergence protocol (ACK exchange, `expecting_ack` clearance)
+     *    is owned by [ResetReceiveTest].
+     *  - The KDF correctness (`deriveResetRootKey` → distinct `RK_0` per
+     *    nonce) is locked by `BootstrapTest.bootstrap_RK0_goldenVector_reset`.
+     * This test owns ONLY the cryptographic property "divergent `RK_0` at
+     * same `R` → AEAD failure".
+     *
+     * Also asserts the DR14 consecutive-failure heuristic counter advances —
+     * if it didn't, the soft prompt would never trigger and the user couldn't
+     * recover via manual reset.
+     */
+    @Test
+    fun reset_divergentResetNonces_surfaceAsAeadFailure() = runBlocking {
+        val pair = bootstrapPair()
+        seedAliceContact(pair)
+        seedBobContact(pair)
+
+        // Synthetic idShared — both sides agree (it's peer-identity material
+        // that survives resets). Value is irrelevant to the property under
+        // test as long as the same bytes feed both KDF calls.
+        val idShared = ByteArray(32) { (0xC0 + it).toByte() }
+        val nonceA = ByteArray(16) { (0x10 + it).toByte() }
+        val nonceB = ByteArray(16) { (0x80 + it).toByte() }
+        val R = 1
+
+        val rkA = Bootstrap.deriveResetRootKey(idShared, R, nonceA)
+        val rkB = Bootstrap.deriveResetRootKey(idShared, R, nonceB)
+        assertFalse(
+            "deriveResetRootKey must surface nonce differences in RK_0",
+            rkA.contentEquals(rkB)
+        )
+
+        overwriteRk(pair.aliceContactId, rkA, pair.aliceInitial)
+        overwriteRk(pair.bobContactId, rkB, pair.bobInitial)
+
+        val transmitted = mutableListOf<ByteArray>()
+        val sender = sender(pair, transmit = { _, b -> transmitted += b })
+        sender.encryptAndSend(pair.aliceContactId, "post-reset".toByteArray()) { hex, _, now ->
+            outboundMessage(hex, pair.aliceContactId, now)
+        }
+
+        val frame = (FrameCodec.decode(transmitted.single()) as FrameCodec.DecodeResult.Ok).frame
+        val receiver = receiver(pair)
+        try {
+            receiver.receive(pair.bobContactId, frame) { _, hex, _, ts ->
+                inboundMessage(hex, pair.bobContactId, ByteArray(0), ts)
+            }
+            fail("expected RatchetCryptoFailure on divergent post-reset RK")
+        } catch (_: RatchetCryptoFailure) {
+            // expected — AEAD fired
+        }
+
+        val bob = db.contactDao().getById(pair.bobContactId)!!
+        assertEquals("DR14 counter must advance on AEAD failure", 1, bob.consecutive_aead_failures)
+    }
+
+    /**
+     * DR16 §10.1 — `reset_lostThenAutoReset_convergesAtSameR`.
+     *
+     * Scenario test: Alice triggers a manual reset; her RESET frame is dropped
+     * on the wire (so Bob never sees Alice's `resetNonce`). Bob's auto-reset
+     * path independently fires at the SAME `R` with HIS own `resetNonce`.
+     * Both sides agree on `R` but disagree on `RK_0` → first DATA AEAD-fails.
+     *
+     * The scenario is what [reset_divergentResetNonces_surfaceAsAeadFailure]
+     * is REGRESSION-GUARDING. Kept as a separate named test because the DR16
+     * catalog enumerates the scenario explicitly: if a future refactor breaks
+     * the nonce-mixing property, both names will fail and the diagnostic is
+     * unambiguous.
+     */
+    @Test
+    fun reset_lostThenAutoReset_convergesAtSameR() = runBlocking {
+        val pair = bootstrapPair()
+        seedAliceContact(pair)
+        seedBobContact(pair)
+
+        val idShared = ByteArray(32) { (0xD0 + it).toByte() }
+        val R = 1
+        val aliceManualNonce = ByteArray(16) { (0x20 + it).toByte() }
+        val bobAutoNonce = ByteArray(16) { (0x90 + it).toByte() }
+
+        val rkA = Bootstrap.deriveResetRootKey(idShared, R, aliceManualNonce)
+        val rkB = Bootstrap.deriveResetRootKey(idShared, R, bobAutoNonce)
+        assertFalse(rkA.contentEquals(rkB))
+
+        // Both sides synthetically bootstrap to the same R via different
+        // nonces — mirrors the lost-wire / independent-auto-reset scenario.
+        overwriteRk(pair.aliceContactId, rkA, pair.aliceInitial)
+        overwriteRk(pair.bobContactId, rkB, pair.bobInitial)
+
+        val transmitted = mutableListOf<ByteArray>()
+        val sender = sender(pair, transmit = { _, b -> transmitted += b })
+        sender.encryptAndSend(pair.aliceContactId, "lost-then-auto".toByteArray()) { hex, _, now ->
+            outboundMessage(hex, pair.aliceContactId, now)
+        }
+
+        val frame = (FrameCodec.decode(transmitted.single()) as FrameCodec.DecodeResult.Ok).frame
+        val receiver = receiver(pair)
+        try {
+            receiver.receive(pair.bobContactId, frame) { _, hex, _, ts ->
+                inboundMessage(hex, pair.bobContactId, ByteArray(0), ts)
+            }
+            fail("expected AEAD failure on diverged auto-reset")
+        } catch (_: RatchetCryptoFailure) {
+            // expected
+        }
+
+        val bob = db.contactDao().getById(pair.bobContactId)!!
+        assertEquals(1, bob.consecutive_aead_failures)
+    }
+
+    /**
+     * Overwrite a contact's persisted ratchet `rk` while keeping the original
+     * bootstrap DH state. Used by reset-divergence tests to install a synthetic
+     * post-reset RK_0 without driving the [ResetReceive] state machine.
+     */
+    private fun overwriteRk(
+        contactId: String,
+        newRk: ByteArray,
+        fromBootstrap: Bootstrap.InitialState
+    ) = runBlocking {
+        val state = RatchetState.fromBootstrap(fromBootstrap).also { it.rk = newRk.copyOf() }
+        val current = db.contactDao().getById(contactId)!!
+        val updated = RatchetStatePersistence.saveRatchetState(current, state, wrapMac)
+        db.contactDao().upsert(updated)
     }
 
     // ---------- Test fixtures ----------

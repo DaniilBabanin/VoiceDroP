@@ -206,6 +206,73 @@ class FrameCodecTest {
     }
 
     @Test
+    fun ciphertextTruncation_detectedByAead() {
+        // Truncate one ciphertext byte AND adjust frameLen so the deframer's
+        // length check passes. The deframer hands a now-short ciphertext to
+        // AEAD; the truncated tag fails verification. Tests the AEAD layer's
+        // length defense once frameLen-mismatch is no longer surfacing it.
+        val original = encodeData()
+        val truncated = original.copyOf(original.size - 1)
+        val realFrameLen = ByteBuffer.wrap(original, 0, FRAME_LEN_BYTES)
+            .order(ByteOrder.BIG_ENDIAN).int
+        ByteBuffer.wrap(truncated, 0, FRAME_LEN_BYTES).order(ByteOrder.BIG_ENDIAN)
+            .putInt(realFrameLen - 1)
+
+        val ok = FrameCodec.decode(truncated) as FrameCodec.DecodeResult.Ok
+        try {
+            FrameCodec.decrypt(ok.frame, key)
+            fail("AEAD silently accepted truncated ciphertext")
+        } catch (_: GeneralSecurityException) {
+            // expected — tag short
+        }
+    }
+
+    @Test
+    fun ciphertextTrailingBytes_detectedByAead() {
+        // Single-byte trailing-junk analog of frameLenTamperedButLengthConsistent_failsAead
+        // (which appends 4 bytes). Kept as a named anchor for the DR16 §10.1 catalog.
+        val original = encodeData()
+        val padded = ByteArray(original.size + 1)
+        System.arraycopy(original, 0, padded, 0, original.size)
+        padded[padded.size - 1] = 0x5a
+        val realFrameLen = ByteBuffer.wrap(original, 0, FRAME_LEN_BYTES)
+            .order(ByteOrder.BIG_ENDIAN).int
+        ByteBuffer.wrap(padded, 0, FRAME_LEN_BYTES).order(ByteOrder.BIG_ENDIAN)
+            .putInt(realFrameLen + 1)
+
+        val ok = FrameCodec.decode(padded) as FrameCodec.DecodeResult.Ok
+        try {
+            FrameCodec.decrypt(ok.frame, key)
+            fail("AEAD silently accepted trailing-byte ciphertext")
+        } catch (_: GeneralSecurityException) {
+            // expected — appended byte invalidates AEAD tag
+        }
+    }
+
+    @Test
+    fun receipt_aeadTampering_rejected() {
+        // RECEIPT frames share the AEAD path with DATA. Locked in here
+        // explicitly per DR16 §10.1 so future codec splits can't silently
+        // skip RECEIPT in tamper coverage.
+        val receiptPlaintext = ByteArray(17).also { it[0] = 0x01 }
+        val wire = FrameCodec.encode(
+            kind = FRAME_KIND_RECEIPT,
+            senderFp = senderFp, recipFp = recipFp, dhPub = dhPub,
+            pn = pn, n = n, uuid = uuid, timestampMs = timestampMs,
+            key = key, plaintext = receiptPlaintext
+        )
+        wire[wire.size - 1] = (wire[wire.size - 1].toInt() xor 0x01).toByte()
+        val ok = FrameCodec.decode(wire) as FrameCodec.DecodeResult.Ok
+        assertEquals(FRAME_KIND_RECEIPT, ok.frame.kind)
+        try {
+            FrameCodec.decrypt(ok.frame, key)
+            fail("AEAD silently accepted tampered RECEIPT ciphertext")
+        } catch (_: GeneralSecurityException) {
+            // expected
+        }
+    }
+
+    @Test
     fun unknownFrameKind_dropped() {
         val wire = encodeData()
         // frameKind is at offset 4 (right after the 4-byte frameLen).

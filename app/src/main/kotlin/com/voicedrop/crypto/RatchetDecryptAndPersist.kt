@@ -396,7 +396,10 @@ class RatchetDecryptAndPersist(
         const val RECEIPT_VERSION: Byte = 0x01
         const val RECEIPT_PLAINTEXT_SIZE = 17
 
-        private fun parseReceiptAcked(plaintext: ByteArray): ByteArray {
+        // Visible to tests in the same module (DR16 §10.1
+        // `receipt_versionByteRejected_ifNotOx01`). Never call from non-test
+        // code outside this class.
+        internal fun parseReceiptAcked(plaintext: ByteArray): ByteArray {
             if (plaintext.size != RECEIPT_PLAINTEXT_SIZE) {
                 throw InvalidFrame("RECEIPT plaintext size=${plaintext.size} != $RECEIPT_PLAINTEXT_SIZE")
             }
