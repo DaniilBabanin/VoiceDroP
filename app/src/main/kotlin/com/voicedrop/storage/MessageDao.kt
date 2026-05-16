@@ -19,6 +19,29 @@ interface MessageDao {
     @Query("UPDATE messages SET state = :state, deliveredAt = :deliveredAt WHERE uuid = :uuid")
     suspend fun updateStateDelivered(uuid: String, state: Int, deliveredAt: Long)
 
+    /**
+     * DR11 §8.7 — RECEIPT clears the sender-side `delivery_state` from PENDING to DELIVERED.
+     * Idempotent: the `delivery_state = DELIVERY_PENDING` guard prevents a late / duplicate
+     * RECEIPT from overwriting a row that already gave up (terminal GAVE_UP). Blocking
+     * variant runs inside the [ReceiptInboundHandler] transaction with deleteByUuidBlocking.
+     */
+    @Query(
+        "UPDATE messages SET delivery_state = ${MessageEntity.DELIVERY_DELIVERED}, deliveredAt = :deliveredAt " +
+            "WHERE uuid = :uuid AND delivery_state = ${MessageEntity.DELIVERY_PENDING}"
+    )
+    fun markDeliveredBlocking(uuid: String, deliveredAt: Long): Int
+
+    /**
+     * DR11 §8.6 — outbox give-up path for DATA marks the sender-side message as
+     * GAVE_UP (terminal). UI surfaces the per-message red dot + retry button.
+     * Idempotent under the same PENDING guard.
+     */
+    @Query(
+        "UPDATE messages SET delivery_state = ${MessageEntity.DELIVERY_GAVE_UP} " +
+            "WHERE uuid = :uuid AND delivery_state = ${MessageEntity.DELIVERY_PENDING}"
+    )
+    fun markGaveUpBlocking(uuid: String): Int
+
     @Query("UPDATE messages SET transcription = :transcription WHERE uuid = :uuid")
     suspend fun updateTranscription(uuid: String, transcription: String)
 

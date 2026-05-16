@@ -32,6 +32,17 @@ interface PendingOutboundFrameDao {
     @Query("DELETE FROM pending_outbound_frames WHERE uuid = :uuid")
     suspend fun deleteByUuid(uuid: ByteArray)
 
+    /**
+     * Blocking variant used from inside `runInTransaction(Callable {...})`:
+     *   - [dr11] RECEIPT inbound handler ([com.voicedrop.crypto.ReceiptInboundHandler]),
+     *     where deleteByUuid + markDeliveredBlocking on `messages` must commit atomically.
+     */
+    @Query("DELETE FROM pending_outbound_frames WHERE uuid = :uuid")
+    fun deleteByUuidBlocking(uuid: ByteArray): Int
+
+    @Query("UPDATE pending_outbound_frames SET attempts = attempts + 1 WHERE uuid = :uuid")
+    fun incrementAttemptsBlocking(uuid: ByteArray): Int
+
     @Query("SELECT * FROM pending_outbound_frames WHERE uuid = :uuid LIMIT 1")
     suspend fun getByUuid(uuid: ByteArray): PendingOutboundFrameEntity?
 
@@ -40,6 +51,10 @@ interface PendingOutboundFrameDao {
 
     @Query("SELECT * FROM pending_outbound_frames ORDER BY created_at ASC")
     suspend fun getAll(): List<PendingOutboundFrameEntity>
+
+    /** Blocking variant for the DR11 replay loop — read inside `runInTransaction`. */
+    @Query("SELECT * FROM pending_outbound_frames ORDER BY created_at ASC")
+    fun getAllBlocking(): List<PendingOutboundFrameEntity>
 
     @Query("SELECT COUNT(*) FROM pending_outbound_frames WHERE contact_id = :contactId")
     suspend fun countForContact(contactId: String): Int
