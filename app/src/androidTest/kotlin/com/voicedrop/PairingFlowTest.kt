@@ -86,7 +86,6 @@ class PairingFlowTest {
             id = aliceFp,
             name = "Alice",
             publicKeyBase64 = android.util.Base64.encodeToString(alicePub, android.util.Base64.NO_WRAP),
-            sharedSecretWrapped = ByteArray(32),
             addedAt = System.currentTimeMillis()
         )
         repository.upsertContact(contact)

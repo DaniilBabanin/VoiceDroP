@@ -239,12 +239,13 @@ class QrPairActivity : AppCompatActivity() {
         publicKeyBytes: ByteArray,
         sessionKey: ByteArray
     ) {
-        val wrappedKey = sessionKey
+        // DR5 will replace this with the ratchet bootstrap (rk_wrapped / dhs_priv_wrapped / etc.).
+        // For now the row is created without ratchet state and the existing v1.x session-key path
+        // (re-derived live in ConnectionManager from identity keys) keeps working.
         val contact = ContactEntity(
             id = fingerprint,
             name = card.name,
             publicKeyBase64 = card.pk,
-            sharedSecretWrapped = wrappedKey,
             addedAt = System.currentTimeMillis()
         )
         repository.upsertContact(contact)
