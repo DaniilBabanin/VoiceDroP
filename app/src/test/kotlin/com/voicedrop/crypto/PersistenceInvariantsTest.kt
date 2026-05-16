@@ -25,6 +25,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
@@ -571,6 +572,232 @@ class PersistenceInvariantsTest {
 
         val bob = db.contactDao().getById(pair.bobContactId)!!
         assertEquals(1, bob.consecutive_aead_failures)
+    }
+
+    /**
+     * DR16 §10.1 — `reset_concurrentBothSides_handlesDivergence` (deferred from
+     * DR16; landed in DR17 because it crosses two [ResetReceive] state
+     * machines).
+     *
+     * Two-party flow: Alice and Bob each call [ResetReceive.manualResetInitiate]
+     * within milliseconds of each other. Each persists its OWN fresh
+     * `resetNonce`, advances `R` 0→1, sets `expecting_ack = 1`, and INSERTs an
+     * initiator RESET row into its own outbox slot. The frames then cross on
+     * the wire.
+     *
+     * Each inbound frame hits the `R_in == contact.R && expecting_ack != 0`
+     * branch (`applyConvergence`). The peer's ack byte is the
+     * initiator-marker, so the local side re-acks with its OWN persisted nonce
+     * (`Outcome.Reacked`). State machine completes — both end at
+     * `reset_epoch = 1`, but `rk` REMAINS DIVERGENT because each side kept its
+     * own nonce.
+     *
+     * The DR13 spec calls this out explicitly:
+     *   "Because [dr5] reset-RK_0 mixes resetNonce, the post-reset RK_0 is
+     *    only identical when the same nonce was authenticated — silent
+     *    forged-convergence collapses to an AEAD failure on the first
+     *    post-reset DATA frame."
+     *
+     * Guarded properties:
+     *  1. Both sides converge in the state machine (R advances, no stalls).
+     *  2. Both produce a re-ack outbox row.
+     *  3. `rk` diverges between the two sides — exactly the property
+     *     `reset_divergentResetNonces_surfaceAsAeadFailure` then leans on to
+     *     prove the divergence surfaces as AEAD failure.
+     */
+    @Test
+    fun reset_concurrentBothSides_handlesDivergence() = runBlocking {
+        val pair = bootstrapPair()
+        seedAliceContact(pair)
+        seedBobContact(pair)
+
+        // The same idShared value on both sides — the test must agree with itself
+        // about what X25519(idPriv, peerIdPub) returns. Real Android computes this
+        // via [KeyManager]; here we just feed the constant through both lambdas.
+        val idShared = ByteArray(32) { (0xA0 + it).toByte() }
+
+        // Deterministic, distinct nonces — concurrent init is exactly the case
+        // where the two sides each roll their own. We bypass
+        // `manualResetInitiate` (which sources nonces from SecureRandom) and
+        // persist the post-init state directly via `installPostInitState`.
+        val aliceNonce = ByteArray(16) { (0x11 + it).toByte() }
+        val bobNonce = ByteArray(16) { (0x77 + it).toByte() }
+        val rkAlice = Bootstrap.deriveResetRootKey(idShared, 1, aliceNonce)
+        val rkBob = Bootstrap.deriveResetRootKey(idShared, 1, bobNonce)
+        assertFalse("RK_0 must differ across distinct nonces at same R",
+            rkAlice.contentEquals(rkBob))
+
+        // Bob's role (aliceFp < bobFp from bootstrapPair) means Bob must
+        // generate a post-reset ephemeral on init, and include its pub in the
+        // RESET plaintext slot. Alice's slot stays zero per [dr12] §6.1.
+        val bobPostResetPriv = X25519.generatePrivateKey()
+        val bobPostResetPub = X25519.publicFromPrivate(bobPostResetPriv)
+
+        // Synthesize each side's POST-manualResetInitiate state: R=1,
+        // expecting_ack=1, fresh rk_wrapped, our nonce persisted; Bob also
+        // carries dhs (post-reset eph), Alice's dhs stays nil.
+        installPostInitState(
+            pair.aliceContactId, pair.aliceInitial, rkAlice, aliceNonce,
+            postResetEphPriv = null, postResetEphPub = null
+        )
+        installPostInitState(
+            pair.bobContactId, pair.bobInitial, rkBob, bobNonce,
+            postResetEphPriv = bobPostResetPriv, postResetEphPub = bobPostResetPub
+        )
+
+        // Build the inbound RESET frames each side would have transmitted.
+        // Alice's slot is zero, Bob's carries his post-reset pub.
+        val aliceFrame = buildInitiatorResetFrame(
+            senderFp = pair.aliceFingerprint,
+            recipFp = pair.bobFingerprint,
+            idShared = idShared,
+            resetNonce = aliceNonce,
+            r = 1,
+            postResetEphPub = ByteArray(ResetCrypto.POST_RESET_EPH_PUB_BYTES)
+        )
+        val bobFrame = buildInitiatorResetFrame(
+            senderFp = pair.bobFingerprint,
+            recipFp = pair.aliceFingerprint,
+            idShared = idShared,
+            resetNonce = bobNonce,
+            r = 1,
+            postResetEphPub = bobPostResetPub
+        )
+
+        val aliceReceiver = ResetReceive(
+            db = db,
+            wrapMac = wrapMac,
+            ownFingerprint32 = pair.aliceFingerprint,
+            idSharedSecretFor = { idShared.copyOf() },
+            clock = { 1_000_000L }
+        )
+        val bobReceiver = ResetReceive(
+            db = db,
+            wrapMac = wrapMac,
+            ownFingerprint32 = pair.bobFingerprint,
+            idSharedSecretFor = { idShared.copyOf() },
+            clock = { 1_000_000L }
+        )
+
+        // Cross-deliver — each side hits applyConvergence on the peer's frame.
+        val aliceOutcome = aliceReceiver.onResetFrame(pair.aliceContactId, bobFrame)
+        val bobOutcome = bobReceiver.onResetFrame(pair.bobContactId, aliceFrame)
+        assertSame("Alice re-acks Bob's concurrent init", ResetReceive.Outcome.Reacked, aliceOutcome)
+        assertSame("Bob re-acks Alice's concurrent init", ResetReceive.Outcome.Reacked, bobOutcome)
+
+        val aliceAfter = db.contactDao().getById(pair.aliceContactId)!!
+        val bobAfter = db.contactDao().getById(pair.bobContactId)!!
+        assertEquals("Alice still at R=1", 1, aliceAfter.reset_epoch)
+        assertEquals("Bob still at R=1", 1, bobAfter.reset_epoch)
+        assertEquals("Alice still expecting ack on her own init", 1, aliceAfter.expecting_ack)
+        assertEquals("Bob still expecting ack on his own init", 1, bobAfter.expecting_ack)
+
+        // Divergence guard: rk_wrapped pairs must differ. wrap IVs are random so
+        // byte equality on rk_wrapped is itself a proof they were sealed under
+        // different plaintexts (different rk_0 values).
+        assertFalse(
+            "rk diverged — confirms each side kept its own nonce",
+            aliceAfter.rk_wrapped!!.contentEquals(bobAfter.rk_wrapped)
+        )
+        // Independent confirmation via unwrap.
+        val aliceRk = wrapMac.unwrapAndVerify(
+            "contacts.rk_wrapped",
+            pair.aliceContactId.toByteArray(Charsets.UTF_8),
+            aliceAfter.rk_wrapped!!,
+            aliceAfter.rk_hmac!!
+        )
+        val bobRk = wrapMac.unwrapAndVerify(
+            "contacts.rk_wrapped",
+            pair.bobContactId.toByteArray(Charsets.UTF_8),
+            bobAfter.rk_wrapped!!,
+            bobAfter.rk_hmac!!
+        )
+        assertArrayEquals("Alice keeps her own RK_0", rkAlice, aliceRk)
+        assertArrayEquals("Bob keeps his own RK_0", rkBob, bobRk)
+
+        // Both sides should have re-enqueued an acknowledger RESET row.
+        assertTrue(
+            "Alice's re-ack landed in outbox",
+            db.pendingOutboundFrameDao().countForContact(pair.aliceContactId) >= 1
+        )
+        assertTrue(
+            "Bob's re-ack landed in outbox",
+            db.pendingOutboundFrameDao().countForContact(pair.bobContactId) >= 1
+        )
+    }
+
+    /**
+     * Mirrors what `ResetReceive.initInsideTxn` writes: wipes ratchet, plants
+     * the post-reset rk_wrapped derived from [resetNonce], bumps reset_epoch
+     * to 1, and persists `reset_nonce + expecting_ack=1`. Used by the
+     * concurrent-init test to bypass the [ResetReceive.manualResetInitiate]
+     * call (whose SecureRandom-sourced nonce we can't pin from outside).
+     */
+    private fun installPostInitState(
+        contactId: String,
+        fromBootstrap: Bootstrap.InitialState,
+        rk0: ByteArray,
+        resetNonce: ByteArray,
+        postResetEphPriv: ByteArray?,
+        postResetEphPub: ByteArray?
+    ) = runBlocking {
+        val state = RatchetState.fromBootstrap(fromBootstrap).also {
+            it.rk = rk0.copyOf()
+            it.dhsPriv = postResetEphPriv?.copyOf()
+            it.dhsPub = postResetEphPub?.copyOf()
+            it.dhrPub = null
+            it.cks = null
+            it.ckr = null
+            it.ns = 0
+            it.nr = 0
+            it.pn = 0
+            it.r = 1
+        }
+        val current = db.contactDao().getById(contactId)!!
+        val saved = RatchetStatePersistence.saveRatchetState(current, state, wrapMac)
+            .copy(
+                reset_epoch = 1,
+                reset_nonce = resetNonce.copyOf(),
+                expecting_ack = 1
+            )
+        db.contactDao().upsert(saved)
+    }
+
+    /**
+     * Build a wire-v2 RESET DecodedFrame the peer would have transmitted with
+     * `ack=0` (initiator), the provided nonce, and an Alice-role
+     * `postResetEphPub` slot (zero-filled per [dr12] §6.1 — Bob/Alice mapping
+     * is irrelevant to the convergence-detection branch we exercise here).
+     */
+    private fun buildInitiatorResetFrame(
+        senderFp: ByteArray,
+        recipFp: ByteArray,
+        idShared: ByteArray,
+        resetNonce: ByteArray,
+        r: Int,
+        postResetEphPub: ByteArray
+    ): FrameCodec.DecodedFrame {
+        val plaintext = ResetCrypto.Plaintext(
+            ack = ResetCrypto.ACK_INITIATOR,
+            postResetEphPub = postResetEphPub.copyOf()
+        )
+        val kReset = ResetCrypto.deriveKReset(idShared, senderFp, recipFp, resetNonce, r)
+        try {
+            val frameUuid = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
+            val wireBytes = ResetCrypto.encode(
+                senderFp = senderFp,
+                recipFp = recipFp,
+                resetNonce = resetNonce,
+                R = r,
+                uuid = frameUuid,
+                timestampMs = 1_000_000L,
+                plaintext = plaintext,
+                kReset = kReset
+            )
+            return (FrameCodec.decode(wireBytes) as FrameCodec.DecodeResult.Ok).frame
+        } finally {
+            kReset.fill(0)
+        }
     }
 
     /**
