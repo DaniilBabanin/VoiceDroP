@@ -289,8 +289,49 @@ class ResetReceiveTest {
         assertSame(ResetReceive.Outcome.Acknowledged, outcome)
         val after = db.contactDao().getById(fx.contactId)!!
         assertEquals(0, after.expecting_ack)
-        // Outbox not touched (no new RESET).
-        assertEquals(initialOutbox, outboxCount(fx.contactId))
+        // DR15: peer's ack-of-our-init drops our retransmit row so the [dr15]
+        // schedule's next tick exits cleanly.
+        assertEquals(0, outboxCount(fx.contactId))
+        assertTrue("initialOutbox should have been 1 before the ack arrived", initialOutbox == 1)
+    }
+
+    @Test
+    fun reset_init_deletesStaleOutboxResetRows_beforeNewInsert() = runBlocking {
+        // First init lays down RESET row at R=1.
+        val fx = freshContact(role = Role.ALICE, reset_epoch = 0)
+        fx.receive.manualResetInitiate(fx.contactId)
+        assertEquals(1, outboxCount(fx.contactId))
+
+        // Force a second manual init — older row should be deleted before INSERT.
+        fx.receive.manualResetInitiate(fx.contactId)
+
+        // Only ONE RESET row remains, for R=2.
+        val rows = db.pendingOutboundFrameDao().getByContact(fx.contactId)
+        assertEquals(1, rows.size)
+        val ack = decodeOutbox(fx, rows.single())
+        assertEquals(2, ack.rOut)
+    }
+
+    @Test
+    fun reset_freshR_deletesStaleOutboxResetRows() = runBlocking {
+        // Set up: we initiated at R=1 (row in outbox), then peer initiates at R=2.
+        val fx = freshContact(role = Role.ALICE, reset_epoch = 0)
+        fx.receive.manualResetInitiate(fx.contactId)
+        assertEquals(1, outboxCount(fx.contactId))
+
+        // Peer's R_in=2 frame — supersedes our R=1 init.
+        val nonce = randomNonce()
+        val frame = buildInboundFrame(fx, rIn = 2, ack = ResetCrypto.ACK_INITIATOR, resetNonce = nonce)
+        val outcome = fx.receive.onResetFrame(fx.contactId, frame)
+        assertSame(ResetReceive.Outcome.FreshReset, outcome)
+
+        // Our stale R=1 RESET row gone. The applyFreshReset ack=0 branch enqueued a
+        // new ack=1 row at R=2 — so outbox count is 1, not 0.
+        val rows = db.pendingOutboundFrameDao().getByContact(fx.contactId)
+        assertEquals(1, rows.size)
+        val ack = decodeOutbox(fx, rows.single())
+        assertEquals(2, ack.rOut)
+        assertEquals(ResetCrypto.ACK_ACKNOWLEDGER, ack.ackByte)
     }
 
     @Test

@@ -272,6 +272,8 @@ class ResetReceive(
         wiped = ensureMyPostResetEph(wiped, myRoleIsBob)
         wiped = ensurePeerPostResetEph(wiped, peerIsBob, plaintext.postResetEphPub)
 
+        // Any prior outbound RESET row was for an older R — peer's reset supersedes ours.
+        deleteResetOutboxRowsInsideTxn(contact.id)
         upsertContactBlocking(wiped)
 
         if (plaintext.ack == ResetCrypto.ACK_INITIATOR) {
@@ -302,7 +304,9 @@ class ResetReceive(
         updated = ensurePeerPostResetEph(updated, peerIsBob, plaintext.postResetEphPub)
 
         return if (plaintext.ack == ResetCrypto.ACK_ACKNOWLEDGER) {
-            // Peer acked our initiation: clear expecting_ack and unblock DATA.
+            // Peer acked our initiation: clear expecting_ack, unblock DATA, and
+            // drop our retransmit row so the [dr15] schedule stops on next tick.
+            deleteResetOutboxRowsInsideTxn(contact.id)
             upsertContactBlocking(updated.copy(expecting_ack = 0))
             eventLog("reset.acknowledged contact=${contact.id} R=$rIn")
             Outcome.Acknowledged
@@ -401,6 +405,9 @@ class ResetReceive(
             expecting_ack = 1
         )
         wiped = ensureMyPostResetEph(wiped, myRoleIsBob)
+        // Any stale RESET rows from prior initiations would race against the new
+        // schedule; drop them before INSERTing the fresh row.
+        deleteResetOutboxRowsInsideTxn(contact.id)
         upsertContactBlocking(wiped)
 
         enqueueInitiatorOutbound(
@@ -540,6 +547,20 @@ class ResetReceive(
     private fun peerFingerprintOf(contact: ContactEntity): ByteArray {
         val pub = android.util.Base64.decode(contact.publicKeyBase64, android.util.Base64.NO_WRAP)
         return Bootstrap.fingerprintBytes(pub)
+    }
+
+    /**
+     * Drop any RESET rows currently sitting in the outbox for [contactId]. Called
+     * from inside the active txn whenever the state mutates such that those rows
+     * would be stale: (a) we adopted a peer's higher R; (b) peer acked our init;
+     * (c) we're about to insert a fresh RESET row for a new initiation. The
+     * [dr15] retransmit job notices the absence on its next tick and exits.
+     */
+    private fun deleteResetOutboxRowsInsideTxn(contactId: String) {
+        db.openHelper.writableDatabase.execSQL(
+            "DELETE FROM pending_outbound_frames WHERE contact_id = ? AND frame_kind = ?",
+            arrayOf<Any>(contactId, PendingOutboundFrameEntity.FRAME_KIND_RESET)
+        )
     }
 
     private fun loadContactBlocking(contactId: String): ContactEntity =
