@@ -23,6 +23,8 @@ import com.google.zxing.BarcodeFormat
 import com.journeyapps.barcodescanner.BarcodeEncoder
 import com.journeyapps.barcodescanner.DecoratedBarcodeView
 import com.voicedrop.R
+import com.google.crypto.tink.subtle.X25519
+import com.voicedrop.crypto.Bootstrap
 import com.voicedrop.crypto.ContactKey
 import com.voicedrop.crypto.KeyManager
 import com.voicedrop.storage.ActiveContactsPrefs
@@ -41,8 +43,19 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.security.MessageDigest
 
+/**
+ * v1 cards used `v=1` and `{id, name, pk}`. v1.2 bumps to `v=2` and adds `bep`
+ * (Base64-encoded 32-byte X25519 bootstrap ephemeral public key — see DR5).
+ * Hard cutover: v1 cards are rejected on scan with a user-facing prompt to upgrade.
+ */
 @Serializable
-data class ContactCard(val v: Int, val id: String, val name: String, val pk: String)
+data class ContactCard(
+    val v: Int,
+    val id: String,
+    val name: String,
+    val pk: String,
+    val bep: String? = null
+)
 
 class QrPairActivity : AppCompatActivity() {
 
@@ -50,6 +63,14 @@ class QrPairActivity : AppCompatActivity() {
     private lateinit var keyManager: KeyManager
     private lateinit var repository: MessageRepository
     private val json = Json { ignoreUnknownKeys = true }
+
+    // DR5 — per-pairing X25519 bootstrap ephemeral. Generated once when the pairing screen
+    // opens; the public half rides in the outgoing QR/file. After a successful pair, the
+    // role decision tells us whether to retain (Bob: becomes DHs.priv) or wipe (Alice).
+    // Wiped in onDestroy regardless.
+    private lateinit var myBootstrapEphPriv: ByteArray
+    private lateinit var myBootstrapEphPub: ByteArray
+    private var bootstrapEphRetired = false
 
     private var barcodeView: DecoratedBarcodeView? = null
 
@@ -78,6 +99,9 @@ class QrPairActivity : AppCompatActivity() {
         keyManager = KeyManager(this)
         val db = AppDatabase.getInstance(this)
         repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())
+
+        myBootstrapEphPriv = X25519.generatePrivateKey()
+        myBootstrapEphPub = X25519.publicFromPrivate(myBootstrapEphPriv)
 
         intent?.data?.let { uri ->
             if (intent.action == Intent.ACTION_VIEW) {
@@ -134,14 +158,28 @@ class QrPairActivity : AppCompatActivity() {
         filePickerLauncher.launch("application/x-voicedrop")
     }
 
+    /** v2 contact-card JSON with this session's bootstrap ephemeral pub. */
+    internal fun getMyContactCardJson(): String {
+        val prefs = getSharedPreferences("voicedrop_settings", MODE_PRIVATE)
+        val displayName = prefs.getString("display_name", "VoiceDrop User") ?: "VoiceDrop User"
+        val fp = keyManager.getFingerprint()
+        val shortId = fp.take(8)
+        val bep = android.util.Base64.encodeToString(myBootstrapEphPub, android.util.Base64.NO_WRAP)
+        val card = ContactCard(
+            v = 2,
+            id = shortId,
+            name = displayName,
+            pk = keyManager.getPublicKeyBase64(),
+            bep = bep
+        )
+        return json.encodeToString(card)
+    }
+
     internal fun shareAsFile() {
         scope.launch {
             val prefs = getSharedPreferences("voicedrop_settings", MODE_PRIVATE)
             val displayName = prefs.getString("display_name", "VoiceDrop User") ?: "VoiceDrop User"
-            val fp = keyManager.getFingerprint()
-            val shortId = fp.take(8)
-            val card = ContactCard(v = 1, id = shortId, name = displayName, pk = keyManager.getPublicKeyBase64())
-            val cardJson = json.encodeToString(card)
+            val cardJson = getMyContactCardJson()
 
             val exportDir = File(filesDir, "export")
             exportDir.mkdirs()
@@ -189,8 +227,13 @@ class QrPairActivity : AppCompatActivity() {
                 }
                 val card = json.decodeFromString<ContactCard>(cardJson)
 
-                if (card.v != 1) {
-                    showError("Incompatible contact card version")
+                if (card.v != 2) {
+                    // Hard cutover per plan/08-dr/00-overview.md §8 — v1 cards refused.
+                    showError("This QR is from VoiceDrop v1.1 or older. Both devices must be on v1.2+ to pair.")
+                    return@launch
+                }
+                if (card.bep == null) {
+                    showError("Invalid v2 contact card — missing bootstrap key")
                     return@launch
                 }
 
@@ -237,16 +280,71 @@ class QrPairActivity : AppCompatActivity() {
         card: ContactCard,
         fingerprint: String,
         publicKeyBytes: ByteArray,
-        sessionKey: ByteArray
+        @Suppress("UNUSED_PARAMETER") sessionKey: ByteArray
     ) {
-        // DR5 will replace this with the ratchet bootstrap (rk_wrapped / dhs_priv_wrapped / etc.).
-        // For now the row is created without ratchet state and the existing v1.x session-key path
-        // (re-derived live in ConnectionManager from identity keys) keeps working.
+        // DR5: compute the initial double-ratchet root key and persist the wrapped ratchet
+        // state alongside the existing identity columns. Until DR7/DR8 land, ConnectionManager
+        // still uses the v1 ECDH session key path — the wrapped state lies dormant.
+        val peerBep = card.bep
+            ?: run { showError("Invalid v2 contact card — missing bootstrap key"); return }
+        val peerBootstrapEphPub = try {
+            android.util.Base64.decode(peerBep, android.util.Base64.NO_WRAP)
+        } catch (_: IllegalArgumentException) {
+            showError("Invalid v2 contact card — malformed bootstrap key"); return
+        }
+        if (peerBootstrapEphPub.size != Bootstrap.X25519_BYTES) {
+            showError("Invalid v2 contact card — bootstrap key wrong size"); return
+        }
+
+        val myIdPriv = keyManager.getPrivateKeyBytes()
+        val myIdPub = keyManager.getPublicKeyBytes()
+
+        val initial = try {
+            Bootstrap.computeInitialBootstrap(
+                myIdPriv = myIdPriv,
+                myIdPub = myIdPub,
+                peerIdPub = publicKeyBytes,
+                myBootstrapEphPriv = myBootstrapEphPriv,
+                myBootstrapEphPub = myBootstrapEphPub,
+                peerBootstrapEphPub = peerBootstrapEphPub
+            )
+        } finally {
+            myIdPriv.fill(0)
+        }
+
+        val rowId = fingerprint.toByteArray(Charsets.UTF_8)
+        val (rkWrapped, rkHmac) = keyManager.wrapAndMac("rk", rowId, initial.rootKey)
+        initial.rootKey.fill(0)
+
+        val dhsPrivWrapped: ByteArray?
+        val dhsPrivHmac: ByteArray?
+        val dhsPrivLocal = initial.dhsPriv
+        if (dhsPrivLocal != null) {
+            val (w, h) = keyManager.wrapAndMac("dhs_priv", rowId, dhsPrivLocal)
+            dhsPrivWrapped = w
+            dhsPrivHmac = h
+            dhsPrivLocal.fill(0)
+        } else {
+            dhsPrivWrapped = null
+            dhsPrivHmac = null
+        }
+
+        // Wipe the activity-held bootstrap eph priv: Bob no longer needs the raw copy
+        // (it's now wrapped into DB), Alice never needed it past this point.
+        myBootstrapEphPriv.fill(0)
+        bootstrapEphRetired = true
+
         val contact = ContactEntity(
             id = fingerprint,
             name = card.name,
             publicKeyBase64 = card.pk,
-            addedAt = System.currentTimeMillis()
+            addedAt = System.currentTimeMillis(),
+            rk_wrapped = rkWrapped,
+            rk_hmac = rkHmac,
+            dhs_priv_wrapped = dhsPrivWrapped,
+            dhs_priv_hmac = dhsPrivHmac,
+            dhs_pub = initial.dhsPub,
+            dhr_pub = initial.dhrPub
         )
         repository.upsertContact(contact)
         if (ActiveContactsPrefs.getDefaultId(this) == null) {
@@ -272,6 +370,9 @@ class QrPairActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         scope.cancel()
+        if (::myBootstrapEphPriv.isInitialized && !bootstrapEphRetired) {
+            myBootstrapEphPriv.fill(0)
+        }
         super.onDestroy()
     }
 

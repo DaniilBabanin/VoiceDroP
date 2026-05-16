@@ -16,8 +16,6 @@ import com.journeyapps.barcodescanner.BarcodeEncoder
 import com.journeyapps.barcodescanner.DecoratedBarcodeView
 import com.voicedrop.R
 import com.voicedrop.crypto.KeyManager
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 
 class QrPairPagerAdapter(
     activity: FragmentActivity,
@@ -43,13 +41,7 @@ class MyQrFragment : Fragment() {
         inflater.inflate(R.layout.fragment_my_qr, container, false)
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        val keyManager = KeyManager(requireContext())
-        val prefs = requireContext().getSharedPreferences("voicedrop_settings", 0)
-        val displayName = prefs.getString("display_name", "VoiceDrop User") ?: "VoiceDrop User"
-        val fp = keyManager.getFingerprint()
-        val shortId = fp.take(8)
-        val card = ContactCard(v = 1, id = shortId, name = displayName, pk = keyManager.getPublicKeyBase64())
-        val cardJson = Json.encodeToString(card)
+        val cardJson = (activity as? QrPairActivity)?.getMyContactCardJson() ?: return
         val qrContent = "voicedrop://pair?card=${Uri.encode(cardJson)}"
 
         val qrImageView = view.findViewById<ImageView>(R.id.image_qr)
