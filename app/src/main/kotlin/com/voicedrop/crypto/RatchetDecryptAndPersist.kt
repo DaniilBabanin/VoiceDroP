@@ -313,7 +313,18 @@ class RatchetDecryptAndPersist(
             put("consecutive_aead_failures_window_start", c.consecutive_aead_failures_window_start)
             put("soft_prompt_dismissed_until", c.soft_prompt_dismissed_until)
         }
-        raw.insert("contacts", android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE, vals)
+        // UPDATE not INSERT-OR-REPLACE: SQLite's CONFLICT_REPLACE strategy is
+        // DELETE-then-INSERT, which cascades through ForeignKey.CASCADE on
+        // `pending_outbound_frames`, `messages`, and `skipped_message_keys` —
+        // wiping out the rows this same transaction just inserted.
+        val rows = raw.update(
+            "contacts",
+            android.database.sqlite.SQLiteDatabase.CONFLICT_ABORT,
+            vals,
+            "id = ?",
+            arrayOf<Any>(c.id)
+        )
+        check(rows == 1) { "expected exactly one contact row updated, got $rows for id=${c.id}" }
     }
 
     private fun insertInboundMessageBlocking(m: MessageEntity) {
