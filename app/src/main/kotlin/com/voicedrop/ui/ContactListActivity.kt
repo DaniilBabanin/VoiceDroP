@@ -88,7 +88,11 @@ class ContactListActivity : AppCompatActivity() {
         val emptyState = findViewById<TextView>(R.id.text_empty_state)
         val fab = findViewById<FloatingActionButton>(R.id.fab_add_contact)
         fab.setOnClickListener {
-            startActivity(Intent(this, QrPairActivity::class.java))
+            if (isSignalingUrlConfigured()) {
+                startActivity(Intent(this, QrPairActivity::class.java))
+            } else {
+                showSignalingUrlRequiredDialog()
+            }
         }
 
         checkOnboarding()
@@ -258,6 +262,22 @@ class ContactListActivity : AppCompatActivity() {
         } finally {
             file.delete()
         }
+    }
+
+    private fun isSignalingUrlConfigured(): Boolean {
+        val prefs = getSharedPreferences("voicedrop_settings", MODE_PRIVATE)
+        return !prefs.getString("signaling_url", "").isNullOrBlank()
+    }
+
+    private fun showSignalingUrlRequiredDialog() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.pair_blocked_no_url_title)
+            .setMessage(R.string.pair_blocked_no_url_message)
+            .setPositiveButton(R.string.open_settings) { _, _ ->
+                startActivity(Intent(this, SettingsActivity::class.java))
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     override fun onDestroy() {

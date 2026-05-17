@@ -135,6 +135,21 @@ class QrPairActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val prefs = getSharedPreferences("voicedrop_settings", MODE_PRIVATE)
+        if (prefs.getString("signaling_url", "").isNullOrBlank()) {
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(R.string.pair_blocked_no_url_title)
+                .setMessage(R.string.pair_blocked_no_url_message)
+                .setPositiveButton(R.string.open_settings) { _, _ ->
+                    startActivity(Intent(this, SettingsActivity::class.java))
+                }
+                .setNegativeButton(android.R.string.cancel, null)
+                .setOnDismissListener { finish() }
+                .show()
+            return
+        }
+
         setContentView(R.layout.activity_qr_pair)
 
         val toolbar = findViewById<Toolbar>(R.id.toolbar)

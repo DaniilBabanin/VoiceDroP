@@ -50,9 +50,12 @@
     <string name="cancel">Cancel</string>
     <string name="pairing_success">Contact added successfully</string>
     <string name="pairing_failed">Pairing failed: mismatched verification code</string>
-    <string name="connection_ok">Connection OK</string>
-    <string name="connection_failed">Connection failed</string>
+    <string name="connection_ok">Server reachable</string>
+    <string name="connection_failed">Connection failed — server not reachable</string>
     <string name="url_saved">URL saved</string>
+    <string name="open_settings">Open Settings</string>
+    <string name="pair_blocked_no_url_title">Signaling server not configured</string>
+    <string name="pair_blocked_no_url_message">Pairing needs a signaling server URL. Set one in Settings (e.g. wss://your-worker.workers.dev/signal) before pairing a contact.</string>
     <string name="permission_denied">Permission denied</string>
     <string name="open_source_licenses">Open Source Licenses</string>
     <string name="privacy_policy">Privacy Policy</string>
