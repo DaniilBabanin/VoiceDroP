@@ -393,9 +393,7 @@ class PersistenceInvariantsTest {
 
         // From here: 3 more inbound decrypts AND 3 Bob-originated sends racing.
         val bobOutboundTransmitted = java.util.Collections.synchronizedList(mutableListOf<ByteArray>())
-        val bobSender = RatchetEncryptAndSend(
-            db, wrapMac, pair.bobFingerprint
-        ) { _, bytes -> bobOutboundTransmitted += bytes }
+        val bobSender = sender(pair, ownFp = pair.bobFingerprint) { _, bytes -> bobOutboundTransmitted += bytes }
         val nOutbound = 3
         val nInboundParallel = 3  // frames[1..3]
         val totalOps = nInboundParallel + nOutbound

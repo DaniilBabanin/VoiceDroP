@@ -204,8 +204,9 @@ class SkippedKeyStoreTest {
         // Alice sends 3 DATA frames. No DH rotation mid-batch: same dhPub on all 3.
         val aliceTransmitted = mutableListOf<ByteArray>()
         val aliceSender = RatchetEncryptAndSend(
-            db, wrapMac, pair.aliceFingerprint
-        ) { _, bytes -> aliceTransmitted += bytes }
+            db, wrapMac, pair.aliceFingerprint,
+            transmit = { _, bytes -> aliceTransmitted += bytes }
+        )
         repeat(3) { i ->
             aliceSender.encryptAndSend(pair.aliceContactId, "msg-$i".toByteArray()) { hex, _, now ->
                 outboundMessage(hex, pair.aliceContactId, now)
