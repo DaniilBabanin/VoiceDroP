@@ -9,7 +9,9 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -18,80 +20,102 @@ import java.security.SecureRandom
  * Regression for v1.2.0.7: `QrPairActivity.confirmPairing` used to inline
  * `wrapAndMac("rk", …)` / `wrapAndMac("dhs_priv", …)` while
  * [RatchetStatePersistence] read with `"contacts.rk_wrapped"` /
- * `"contacts.dhs_priv_wrapped"`. The binding HMAC includes the column name, so
+ * `"contacts.dhs_priv_wrapped"`. The binding HMAC covers the column name, so
  * every first send threw [WrapHmacMismatch] and both Alice's auto-HELLO and any
  * subsequent message died silently. Fix routes the first-pairing write through
  * [RatchetStatePersistence.saveRatchetState] so the column-name strings live in
  * one place.
  *
- * This test pins the round-trip: build a [Bootstrap.InitialState] the way the
- * pairing flow does, persist via `saveRatchetState`, reload via
- * `loadRatchetState`, and assert the root key matches. If anyone reintroduces
- * a hardcoded column literal at either end, this fails.
+ * This test pins the round-trip: build a [Bootstrap.InitialState] from both
+ * sides of a fresh pair, persist via `saveRatchetState`, reload via
+ * `loadRatchetState`, and assert every populated field comes back byte-equal.
+ * If anyone reintroduces a hardcoded column literal at either end, this fails.
  */
 class BootstrapInsertPersistenceTest {
 
     @Test
     fun bootstrap_saveThenLoad_recoversRootKeyAndDhState() {
-        val alicePriv = X25519.generatePrivateKey()
-        val alicePub = X25519.publicFromPrivate(alicePriv)
-        val bobPriv = X25519.generatePrivateKey()
-        val bobPub = X25519.publicFromPrivate(bobPriv)
-        val aliceEphPriv = X25519.generatePrivateKey()
-        val aliceEphPub = X25519.publicFromPrivate(aliceEphPriv)
-        val bobEphPriv = X25519.generatePrivateKey()
-        val bobEphPub = X25519.publicFromPrivate(bobEphPriv)
+        val aPriv = X25519.generatePrivateKey()
+        val aPub = X25519.publicFromPrivate(aPriv)
+        val bPriv = X25519.generatePrivateKey()
+        val bPub = X25519.publicFromPrivate(bPriv)
+        val aEphPriv = X25519.generatePrivateKey()
+        val aEphPub = X25519.publicFromPrivate(aEphPriv)
+        val bEphPriv = X25519.generatePrivateKey()
+        val bEphPub = X25519.publicFromPrivate(bEphPriv)
 
         val wrapMac = TestWrapMac()
 
-        // ALICE side — dhsPriv is null, dhrPub is bobEphPub.
-        run {
-            val initial = Bootstrap.computeInitialBootstrap(
-                myIdPriv = alicePriv, myIdPub = alicePub, peerIdPub = bobPub,
-                myBootstrapEphPriv = aliceEphPriv, myBootstrapEphPub = aliceEphPub,
-                peerBootstrapEphPub = bobEphPub
-            )
-            val rkBefore = initial.rootKey.copyOf()
-            val fingerprint = fingerprintHex(bobPub)
-            val base = ContactEntity(id = fingerprint, name = "Bob", publicKeyBase64 = "", addedAt = 0L)
-            val state = RatchetState(
-                dhsPriv = initial.dhsPriv,
-                dhsPub = initial.dhsPub,
-                dhrPub = initial.dhrPub,
-                rk = initial.rootKey
-            )
-            val saved = RatchetStatePersistence.saveRatchetState(base, state, wrapMac)
+        val sideA = Bootstrap.computeInitialBootstrap(
+            myIdPriv = aPriv, myIdPub = aPub, peerIdPub = bPub,
+            myBootstrapEphPriv = aEphPriv, myBootstrapEphPub = aEphPub,
+            peerBootstrapEphPub = bEphPub
+        )
+        val sideB = Bootstrap.computeInitialBootstrap(
+            myIdPriv = bPriv, myIdPub = bPub, peerIdPub = aPub,
+            myBootstrapEphPriv = bEphPriv, myBootstrapEphPub = bEphPub,
+            peerBootstrapEphPub = aEphPub
+        )
 
-            val loaded = RatchetStatePersistence.loadRatchetState(saved, wrapMac)
-            assertArrayEquals("RK_0 must survive save→load round trip (Alice)", rkBefore, loaded.rk)
-            assertNotNull("Alice keeps peer DH pub", loaded.dhrPub)
-            assertArrayEquals(bobEphPub, loaded.dhrPub)
+        // Sanity: both peers derived the same RK_0, and the role flip is consistent.
+        assertArrayEquals("RK_0 must agree across the pair", sideA.rootKey, sideB.rootKey)
+        assertEquals(
+            "exactly one side is Alice, the other Bob",
+            setOf(Bootstrap.Role.ALICE, Bootstrap.Role.BOB),
+            setOf(sideA.role, sideB.role)
+        )
+
+        assertRoundTripsCleanly(sideA, fingerprintHex(bPub), name = "Bob-as-seen-by-${sideA.role}", wrapMac = wrapMac)
+        assertRoundTripsCleanly(sideB, fingerprintHex(aPub), name = "Alice-as-seen-by-${sideB.role}", wrapMac = wrapMac)
+    }
+
+    /**
+     * Mirror of the QrPairActivity.confirmPairing insert path: build a base contact,
+     * wrap via `saveRatchetState`, then load and assert every non-null field
+     * survives byte-for-byte.
+     */
+    private fun assertRoundTripsCleanly(
+        initial: Bootstrap.InitialState,
+        peerFingerprint: String,
+        name: String,
+        wrapMac: WrapMac
+    ) {
+        val rkBefore = initial.rootKey.copyOf()
+        val dhsPrivBefore = initial.dhsPriv?.copyOf()
+        val dhsPubBefore = initial.dhsPub?.copyOf()
+        val dhrPubBefore = initial.dhrPub?.copyOf()
+
+        val base = ContactEntity(
+            id = peerFingerprint,
+            name = name,
+            publicKeyBase64 = "",
+            addedAt = 0L
+        )
+        val state = RatchetState(
+            dhsPriv = initial.dhsPriv,
+            dhsPub = initial.dhsPub,
+            dhrPub = initial.dhrPub,
+            rk = initial.rootKey
+        )
+        val saved = RatchetStatePersistence.saveRatchetState(base, state, wrapMac)
+
+        val loaded = RatchetStatePersistence.loadRatchetState(saved, wrapMac)
+        assertArrayEquals("$name: RK_0 must survive save→load", rkBefore, loaded.rk)
+        if (dhsPrivBefore == null) {
+            assertNull("$name: dhsPriv stays null", loaded.dhsPriv)
+        } else {
+            assertNotNull("$name: dhsPriv survives", loaded.dhsPriv)
+            assertArrayEquals("$name: dhsPriv bytes", dhsPrivBefore, loaded.dhsPriv)
         }
-
-        // BOB side — dhsPriv is bobEphPriv, dhrPub is null.
-        run {
-            val initial = Bootstrap.computeInitialBootstrap(
-                myIdPriv = bobPriv, myIdPub = bobPub, peerIdPub = alicePub,
-                myBootstrapEphPriv = bobEphPriv, myBootstrapEphPub = bobEphPub,
-                peerBootstrapEphPub = aliceEphPub
-            )
-            val rkBefore = initial.rootKey.copyOf()
-            val dhsPrivBefore = initial.dhsPriv!!.copyOf()
-            val fingerprint = fingerprintHex(alicePub)
-            val base = ContactEntity(id = fingerprint, name = "Alice", publicKeyBase64 = "", addedAt = 0L)
-            val state = RatchetState(
-                dhsPriv = initial.dhsPriv,
-                dhsPub = initial.dhsPub,
-                dhrPub = initial.dhrPub,
-                rk = initial.rootKey
-            )
-            val saved = RatchetStatePersistence.saveRatchetState(base, state, wrapMac)
-
-            val loaded = RatchetStatePersistence.loadRatchetState(saved, wrapMac)
-            assertArrayEquals("RK_0 must survive save→load round trip (Bob)", rkBefore, loaded.rk)
-            assertNotNull("Bob keeps DH priv", loaded.dhsPriv)
-            assertArrayEquals(dhsPrivBefore, loaded.dhsPriv)
-            assertArrayEquals(bobEphPub, loaded.dhsPub)
+        if (dhsPubBefore == null) {
+            assertNull("$name: dhsPub stays null", loaded.dhsPub)
+        } else {
+            assertArrayEquals("$name: dhsPub bytes", dhsPubBefore, loaded.dhsPub)
+        }
+        if (dhrPubBefore == null) {
+            assertNull("$name: dhrPub stays null", loaded.dhrPub)
+        } else {
+            assertArrayEquals("$name: dhrPub bytes", dhrPubBefore, loaded.dhrPub)
         }
     }
 
