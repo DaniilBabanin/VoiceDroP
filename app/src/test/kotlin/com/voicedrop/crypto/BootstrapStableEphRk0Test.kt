@@ -54,10 +54,23 @@ class BootstrapStableEphRk0Test {
         // This is the regression the bug exhibited: the UI re-minted Bob's eph on
         // the second `onCreate`, so Alice's second-half scan saw a different bep
         // and computed a non-matching RK_0.
-        val aIdPriv = X25519.generatePrivateKey()
-        val bIdPriv = X25519.generatePrivateKey()
-        val aIdPub = X25519.publicFromPrivate(aIdPriv)
-        val bIdPub = X25519.publicFromPrivate(bIdPriv)
+        //
+        // The test pins the local party to the ALICE role. decideRole compares
+        // SHA-256 fingerprints of identity keys, so random key generation lands
+        // in the BOB branch ~50% of the time — and BOB's bootstrapDH uses its
+        // OWN eph and ignores the peer eph, so varying `peerBootstrapEphPub`
+        // would produce identical RK_0s and the assertion below would fire.
+        // Regenerate until the local party is ALICE.
+        var aIdPriv: ByteArray
+        var aIdPub: ByteArray
+        var bIdPriv: ByteArray
+        var bIdPub: ByteArray
+        do {
+            aIdPriv = X25519.generatePrivateKey()
+            aIdPub = X25519.publicFromPrivate(aIdPriv)
+            bIdPriv = X25519.generatePrivateKey()
+            bIdPub = X25519.publicFromPrivate(bIdPriv)
+        } while (Bootstrap.decideRole(aIdPub, bIdPub) != Bootstrap.Role.ALICE)
 
         val aEphPriv = X25519.generatePrivateKey()
         val aEphPub = X25519.publicFromPrivate(aEphPriv)
