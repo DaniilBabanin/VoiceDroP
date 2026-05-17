@@ -1,6 +1,6 @@
 package com.voicedrop.network
 
-import com.google.crypto.tink.subtle.InsecureNonceChaCha20Poly1305
+import com.voicedrop.crypto.ChaCha20Poly1305Aead
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
@@ -17,9 +17,10 @@ import java.security.MessageDigest
  * (see plan/08-dr/00-overview.md §5).
  *
  * Tink's `subtle.ChaCha20Poly1305` prepends a random nonce and is therefore
- * the WRONG primitive here. `InsecureNonceChaCha20Poly1305` lets us pin nonce=0
- * to match the spec's wire shape. The "Insecure" prefix is the library's
- * disclaimer for nonce-reuse; we avoid that via per-frame `mk` / `K_reset`.
+ * the WRONG primitive here. [ChaCha20Poly1305Aead] (javax.crypto.Cipher with
+ * the standard "ChaCha20-Poly1305" algorithm, API 28+) lets us pin nonce=0
+ * to match the spec's wire shape; nonce-reuse safety rests on per-frame
+ * key uniqueness (`mk` for DATA, `K_reset` for RESET).
  */
 object FrameCodec {
 
@@ -153,8 +154,7 @@ object FrameCodec {
             putLong(timestampMs)
         }.array()
 
-        val aead = InsecureNonceChaCha20Poly1305(key)
-        val ciphertext = aead.encrypt(ZERO_NONCE, plaintext, aad)
+        val ciphertext = ChaCha20Poly1305Aead.encrypt(key, ZERO_NONCE, plaintext, aad)
         check(ciphertext.size == ciphertextSize) { "unexpected AEAD output size" }
 
         val wire = ByteArray(AAD_LEN + ciphertextSize)
@@ -240,8 +240,7 @@ object FrameCodec {
      */
     fun decrypt(frame: DecodedFrame, key: ByteArray): ByteArray {
         require(key.size == 32) { "AEAD key must be 32 bytes" }
-        val aead = InsecureNonceChaCha20Poly1305(key)
-        return aead.decrypt(ZERO_NONCE, frame.ciphertext, frame.aad)
+        return ChaCha20Poly1305Aead.decrypt(key, ZERO_NONCE, frame.ciphertext, frame.aad)
     }
 
     fun isAllZero(bytes: ByteArray): Boolean {

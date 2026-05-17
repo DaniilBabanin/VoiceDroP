@@ -13,10 +13,10 @@ android {
 
     defaultConfig {
         applicationId = "com.voicedrop"
-        minSdk = 26
+        minSdk = 28
         targetSdk = 36
-        versionCode = 57
-        versionName = "1.2.0.1"
+        versionCode = 58
+        versionName = "1.2.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

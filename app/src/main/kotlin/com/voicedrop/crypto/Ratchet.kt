@@ -1,6 +1,5 @@
 package com.voicedrop.crypto
 
-import com.google.crypto.tink.subtle.InsecureNonceChaCha20Poly1305
 import com.google.crypto.tink.subtle.X25519
 import com.voicedrop.network.FrameCodec
 import javax.crypto.Mac
@@ -24,9 +23,9 @@ import javax.crypto.spec.SecretKeySpec
  *     AEAD does NOT consume budget (see [dr9-skipped-keys.md]).
  *   - Forward secrecy: every chain-step zeros the old chain key. Old root keys
  *     are likewise overwritten on each DH ratchet step.
- *   - We use Tink's `InsecureNonceChaCha20Poly1305` with the all-zero 12-byte
- *     nonce — safe because every `mk` is unique (per Signal §5.2). See
- *     overview §5.
+ *   - We use [ChaCha20Poly1305Aead] (javax.crypto.Cipher under the hood) with
+ *     the all-zero 12-byte nonce — safe because every `mk` is unique (per
+ *     Signal §5.2). See overview §5.
  */
 
 class AwaitingFirstReceive :
@@ -432,9 +431,8 @@ object Ratchet {
 
     private fun aeadOpen(mk: ByteArray, ciphertext: ByteArray, aad: ByteArray): ByteArray {
         require(mk.size == 32) { "mk must be 32 bytes" }
-        val aead = InsecureNonceChaCha20Poly1305(mk)
         return try {
-            aead.decrypt(ZERO_NONCE, ciphertext, aad)
+            ChaCha20Poly1305Aead.decrypt(mk, ZERO_NONCE, ciphertext, aad)
         } catch (e: Throwable) {
             throw RatchetCryptoFailure(e)
         }
