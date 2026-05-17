@@ -1,6 +1,5 @@
 package com.voicedrop.ui
 
-import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
@@ -11,8 +10,6 @@ import android.widget.ImageView
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentActivity
 import androidx.viewpager2.adapter.FragmentStateAdapter
-import com.google.zxing.BarcodeFormat
-import com.journeyapps.barcodescanner.BarcodeEncoder
 import com.journeyapps.barcodescanner.DecoratedBarcodeView
 import com.voicedrop.R
 import com.voicedrop.crypto.KeyManager
@@ -45,11 +42,7 @@ class MyQrFragment : Fragment() {
         val qrContent = "voicedrop://pair?card=${Uri.encode(cardJson)}"
 
         val qrImageView = view.findViewById<ImageView>(R.id.image_qr)
-        try {
-            val encoder = BarcodeEncoder()
-            val bitmap: Bitmap = encoder.encodeBitmap(qrContent, BarcodeFormat.QR_CODE, 512, 512)
-            qrImageView.setImageBitmap(bitmap)
-        } catch (_: Exception) {}
+        QrEncoder.encode(qrContent, 512)?.let { qrImageView.setImageBitmap(it) }
 
         view.findViewById<Button>(R.id.button_share_file)?.setOnClickListener {
             (activity as? QrPairActivity)?.shareAsFile()

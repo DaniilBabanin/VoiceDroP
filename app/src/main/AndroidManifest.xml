@@ -37,7 +37,7 @@
         <activity
             android:name=".ui.QrPairActivity"
             android:exported="true"
-            android:noHistory="true">
+            android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>

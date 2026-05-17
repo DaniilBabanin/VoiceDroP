@@ -6,10 +6,14 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.view.MenuItem
+import android.view.View
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
 import androidx.core.content.FileProvider
@@ -81,6 +85,28 @@ class QrPairActivity : AppCompatActivity() {
 
     private var barcodeView: DecoratedBarcodeView? = null
 
+    // DR17.6 — three-state UI controller. The post-scan Verify panel is hosted by
+    // this activity (not a dialog, not a fragment in the pager) so it can fully
+    // replace the tab UI while the user compares emojis on both devices, without
+    // tearing down the activity (which would regenerate `myBootstrapEphPriv` and
+    // break the partner's reverse scan).
+    private enum class UiState { SHOWING_QR, VERIFY, CONFIRMING }
+    private var uiState: UiState = UiState.SHOWING_QR
+
+    /**
+     * Holds the post-`computeInitialBootstrap` state across the user's emoji-compare
+     * decision. Wiped on Match consumption, Different tap, back-press out of VERIFY,
+     * and `onDestroy`. Carries the only in-memory copy of `RK_0` and (Bob's) DHs.priv,
+     * so every exit path must `fill(0)` before clearing the reference.
+     */
+    private var pendingInitialState: Bootstrap.InitialState? = null
+    private data class PendingPeer(
+        val card: ContactCard,
+        val theirFingerprint: String,
+        val emojis: List<String>
+    )
+    private var pendingPeer: PendingPeer? = null
+
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -93,6 +119,16 @@ class QrPairActivity : AppCompatActivity() {
         ActivityResultContracts.GetContent()
     ) { uri ->
         uri?.let { importFromUri(it) }
+    }
+
+    private val backCallback = object : OnBackPressedCallback(true) {
+        override fun handleOnBackPressed() {
+            if (uiState == UiState.VERIFY) {
+                popVerifyToShowingQr()
+            } else {
+                finish()
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -115,6 +151,12 @@ class QrPairActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.repair_warning, Toast.LENGTH_LONG).show()
         }
 
+        onBackPressedDispatcher.addCallback(this, backCallback)
+
+        // DR17.6 — always inflate tabs before dispatching deep-link / file-import,
+        // so a back-press from VERIFY has a real SHOWING_QR to land on.
+        setupTabs()
+
         intent?.data?.let { uri ->
             if (intent.action == Intent.ACTION_VIEW) {
                 if (uri.scheme == "voicedrop") {
@@ -124,11 +166,8 @@ class QrPairActivity : AppCompatActivity() {
                 } else {
                     importFromUri(uri)
                 }
-                return
             }
         }
-
-        setupTabs()
     }
 
     private fun setupTabs() {
@@ -160,7 +199,13 @@ class QrPairActivity : AppCompatActivity() {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         if (item.itemId == android.R.id.home) {
-            finish()
+            // DR17.6 — toolbar home mirrors the system back-press: in VERIFY it
+            // pops to SHOWING_QR (wiping pendingInitialState); otherwise finish.
+            if (uiState == UiState.VERIFY) {
+                popVerifyToShowingQr()
+            } else {
+                finish()
+            }
             return true
         }
         return super.onOptionsItemSelected(item)
@@ -230,9 +275,12 @@ class QrPairActivity : AppCompatActivity() {
 
     /**
      * Parse the scanned/imported card, immediately run [Bootstrap.computeInitialBootstrap]
-     * so the SAS emojis are derived from the actual ratchet root key (RK_0), then show
-     * verification. Holding RK_0 in memory across the dialog window is required so an
-     * active MITM with control of both QR exchanges still produces mismatched emojis.
+     * so the SAS emojis are derived from the actual ratchet root key (RK_0), then transition
+     * to the in-activity VERIFY state. Holding RK_0 in memory across the verify panel is
+     * required so an active MITM with control of both QR exchanges still produces mismatched
+     * emojis. DR17.6 — the re-pair peer-identity check fires here, before the bootstrap
+     * derivation, so a wrong-peer scan in re-pair mode is rejected before any key material
+     * is created.
      */
     fun handleScannedCard(text: String) {
         android.util.Log.d(TAG, "handleScannedCard: ${text.take(80)}")
@@ -257,6 +305,15 @@ class QrPairActivity : AppCompatActivity() {
                 val theirPublicKeyBytes = android.util.Base64.decode(card.pk, android.util.Base64.NO_WRAP)
                 val theirFingerprint = ContactKey.fingerprint(theirPublicKeyBytes)
                 val myFingerprint = keyManager.getFingerprint()
+
+                // DR17.6 — re-pair peer-identity gate. Moved from confirmPairing so the
+                // user finds out about a wrong-peer scan immediately, with no wasted
+                // bootstrap derivation and no temporarily-held RK_0 to wipe.
+                val repairId = repairContactId
+                if (repairId != null && repairId != theirFingerprint) {
+                    showError("This QR is from a different contact. Re-pair scans the SAME peer.")
+                    return@launch
+                }
 
                 val peerBootstrapEphPub = try {
                     android.util.Base64.decode(card.bep, android.util.Base64.NO_WRAP)
@@ -285,7 +342,7 @@ class QrPairActivity : AppCompatActivity() {
                 val verificationBytes = ContactKey.computeVerificationCode(initial.rootKey, myFingerprint, theirFingerprint)
                 val emojis = PairingVerificationEmojiMap.getEmojisForBytes(verificationBytes)
 
-                showVerificationScreen(card, theirFingerprint, initial, emojis)
+                transitionToVerify(card, theirFingerprint, initial, emojis)
             } catch (e: Exception) {
                 android.util.Log.e(TAG, "handleScannedCard failed", e)
                 showError("Invalid QR code — not a VoiceDrop contact card")
@@ -293,28 +350,99 @@ class QrPairActivity : AppCompatActivity() {
         }
     }
 
-    private fun showVerificationScreen(
+    /**
+     * DR17.6 — replaces the old AlertDialog with an in-activity VERIFY panel. The
+     * tab UI is hidden; the verify_container FrameLayout fills the area below the
+     * toolbar. The activity is NOT finished here — only on Match or Different (or
+     * the back-press out of VERIFY, which finishes nothing).
+     */
+    private fun transitionToVerify(
         card: ContactCard,
         theirFingerprint: String,
         initial: Bootstrap.InitialState,
         emojis: List<String>
     ) {
-        val view = layoutInflater.inflate(R.layout.dialog_verify_pairing, null)
-        view.findViewById<TextView>(R.id.verificationEmojis).text =
-            emojis.joinToString(" ")
-        AlertDialog.Builder(this)
-            .setTitle(R.string.verification_title)
-            .setView(view)
-            .setPositiveButton(R.string.verification_codes_match) { _, _ ->
-                scope.launch { confirmPairing(card, theirFingerprint, initial) }
-            }
-            .setNegativeButton(R.string.verification_codes_differ) { _, _ ->
-                // User rejected — wipe RK_0 immediately so it doesn't linger after GC.
-                initial.rootKey.fill(0)
-                initial.dhsPriv?.fill(0)
-            }
-            .setCancelable(false)
-            .show()
+        pendingInitialState = initial
+        pendingPeer = PendingPeer(card, theirFingerprint, emojis)
+        uiState = UiState.VERIFY
+
+        val tabLayout = findViewById<TabLayout>(R.id.tab_layout)
+        val viewPager = findViewById<ViewPager2>(R.id.view_pager)
+        val verifyContainer = findViewById<FrameLayout>(R.id.verify_container)
+
+        tabLayout.visibility = View.GONE
+        viewPager.visibility = View.GONE
+        verifyContainer.visibility = View.VISIBLE
+        verifyContainer.removeAllViews()
+        layoutInflater.inflate(R.layout.view_verify_pairing, verifyContainer, true)
+
+        verifyContainer.findViewById<TextView>(R.id.verify_title).text =
+            getString(R.string.verification_with_peer_title, card.name)
+        verifyContainer.findViewById<TextView>(R.id.verify_emojis).apply {
+            text = emojis.joinToString(" ")
+            contentDescription = getString(R.string.verification_title)
+        }
+
+        QrEncoder.encode(
+            "voicedrop://pair?card=${Uri.encode(getMyContactCardJson())}",
+            VERIFY_QR_PX
+        )?.let { bitmap ->
+            verifyContainer.findViewById<ImageView>(R.id.verify_qr_thumbnail).setImageBitmap(bitmap)
+        }
+
+        val matchButton = verifyContainer.findViewById<Button>(R.id.verify_button_match)
+        matchButton.text = getString(R.string.verification_pair_with_peer, card.name)
+        matchButton.setOnClickListener { onMatchTapped() }
+
+        verifyContainer.findViewById<Button>(R.id.verify_button_different)
+            .setOnClickListener { onDifferentTapped() }
+    }
+
+    private fun onMatchTapped() {
+        val peer = pendingPeer ?: return
+        val initial = pendingInitialState ?: return
+        uiState = UiState.CONFIRMING
+
+        val verifyContainer = findViewById<FrameLayout>(R.id.verify_container)
+        verifyContainer.findViewById<Button>(R.id.verify_button_match).isEnabled = false
+        verifyContainer.findViewById<Button>(R.id.verify_button_different).isEnabled = false
+
+        scope.launch {
+            confirmPairing(peer.card, peer.theirFingerprint, initial)
+            // confirmPairing zeros initial.rootKey / dhsPriv during wrap and then
+            // finishes the activity. Null the field handles to drop the references.
+            pendingInitialState = null
+            pendingPeer = null
+        }
+    }
+
+    private fun onDifferentTapped() {
+        wipePendingInitialState()
+        pendingPeer = null
+        finish()
+    }
+
+    private fun popVerifyToShowingQr() {
+        wipePendingInitialState()
+        pendingPeer = null
+        uiState = UiState.SHOWING_QR
+
+        val tabLayout = findViewById<TabLayout>(R.id.tab_layout)
+        val viewPager = findViewById<ViewPager2>(R.id.view_pager)
+        val verifyContainer = findViewById<FrameLayout>(R.id.verify_container)
+
+        verifyContainer.visibility = View.GONE
+        verifyContainer.removeAllViews()
+        tabLayout.visibility = View.VISIBLE
+        viewPager.visibility = View.VISIBLE
+    }
+
+    private fun wipePendingInitialState() {
+        pendingInitialState?.let {
+            it.rootKey.fill(0)
+            it.dhsPriv?.fill(0)
+        }
+        pendingInitialState = null
     }
 
     private suspend fun confirmPairing(
@@ -322,20 +450,13 @@ class QrPairActivity : AppCompatActivity() {
         fingerprint: String,
         initial: Bootstrap.InitialState
     ) {
-        // DR17.5 W5 — re-pair flow: refuse if the scanned card's identity doesn't
-        // match the existing contact (user must scan the SAME peer to re-pair),
-        // then wipe the contact's v2 state before the upsert. Not strictly one
-        // txn — a crash between wipe and upsert leaves pending_repair=1 with
-        // empty ratchet; user retries from "Pair again" and the upsert restores
+        // DR17.5 W5 — re-pair flow: the peer-identity check moved to handleScannedCard
+        // (DR17.6); here we still wipe the contact's v2 state before the upsert. Not
+        // strictly one txn — a crash between wipe and upsert leaves pending_repair=1
+        // with empty ratchet; user retries from "Pair again" and the upsert restores
         // the contact row.
         val repairId = repairContactId
         if (repairId != null) {
-            if (repairId != fingerprint) {
-                initial.rootKey.fill(0)
-                initial.dhsPriv?.fill(0)
-                showError("This QR is from a different contact. Re-pair scans the SAME peer.")
-                return
-            }
             RePairWipe(db).wipe(repairId)
         }
 
@@ -431,6 +552,8 @@ class QrPairActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         scope.cancel()
+        wipePendingInitialState()
+        pendingPeer = null
         if (::myBootstrapEphPriv.isInitialized && !bootstrapEphRetired) {
             myBootstrapEphPriv.fill(0)
         }
@@ -439,6 +562,7 @@ class QrPairActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "VoiceDrop/QrPair"
+        private const val VERIFY_QR_PX = 480
 
         /**
          * Extra: when set, launches the activity in re-pair mode for the given
