@@ -15,8 +15,8 @@ android {
         applicationId = "com.voicedrop"
         minSdk = 28
         targetSdk = 36
-        versionCode = 59
-        versionName = "1.2.0.3"
+        versionCode = 60
+        versionName = "1.2.0.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -86,4 +86,16 @@ val copyPrivacyPolicy by tasks.registering(Copy::class) {
 
 tasks.named("preBuild") {
     dependsOn(copyPrivacyPolicy)
+}
+
+// Full stack traces in CI so test failures show the assertion site, not just
+// the top-level throw site. Default Gradle reporter elides everything between.
+tasks.withType<Test>().configureEach {
+    testLogging {
+        events("passed", "skipped", "failed")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showStandardStreams = true
+        showStackTraces = true
+        showCauses = true
+    }
 }

@@ -174,7 +174,10 @@ class AutoResetTriggerTest {
         assertTrue(fx.trigger.onStructuralCorruption(fx.contactId, structural()) is AutoResetTrigger.Decision.Triggered)
 
         assertEquals(4, db.contactDao().getById(fx.contactId)!!.auto_reset_count_24h)
-        assertEquals(4, outboxCount(fx.contactId))
+        // Only one initiator RESET row exists per contact at a time: each
+        // manualResetInitiate calls deleteResetOutboxRowsInsideTxn before
+        // inserting (see ResetReceive.initInsideTxn). Counter is the auth.
+        assertEquals(1, outboxCount(fx.contactId))
 
         // Attempt 5 — even after a long wait, cap arms budget refuse window.
         nowMs += 1L * 60 * 60 * 1000
@@ -182,7 +185,7 @@ class AutoResetTriggerTest {
         assertTrue("expected BudgetExhaustedNow, got $capped", capped is AutoResetTrigger.Decision.BudgetExhaustedNow)
         val budgetUntil = (capped as AutoResetTrigger.Decision.BudgetExhaustedNow).until
         assertEquals(nowMs + AutoResetTrigger.BUDGET_EXHAUSTED_MS, budgetUntil)
-        assertEquals(4, outboxCount(fx.contactId)) // no new outbox row
+        assertEquals(1, outboxCount(fx.contactId)) // still the single standing RESET row
 
         // Subsequent calls during the 7d window → SkippedBudgetExhausted.
         nowMs += 60_000L
@@ -218,7 +221,8 @@ class AutoResetTriggerTest {
         nowMs += 2_000L
         assertTrue(fx.trigger.onStructuralCorruption(fx.contactId, structural()) is AutoResetTrigger.Decision.Triggered)
         assertEquals(2, db.contactDao().getById(fx.contactId)!!.auto_reset_count_24h)
-        assertEquals(2, outboxCount(fx.contactId))
+        // Outbox still 1 — the second fire replaced (not added) the standing RESET row.
+        assertEquals(1, outboxCount(fx.contactId))
     }
 
     @Test
