@@ -51,13 +51,22 @@ import java.security.SecureRandom
 @Config(sdk = [33])
 class SkippedKeyStoreTest {
 
+    // Two DBs to mirror production (Alice and Bob on separate phones).
+    // `db` is Bob's — used by single-contact DAO tests; Alice's encrypt
+    // path in `eviction_dropsKeyBeforeFrameArrives_chainContinues` writes
+    // its outbound rows to `aliceDb` so they don't collide with Bob's
+    // dedup query (`RatchetDecryptAndPersist.isMessageInDb`).
     private lateinit var db: AppDatabase
+    private lateinit var aliceDb: AppDatabase
     private lateinit var wrapMac: TestWrapMac
 
     @Before
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        aliceDb = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
             .allowMainThreadQueries()
             .build()
         wrapMac = TestWrapMac()
@@ -67,6 +76,7 @@ class SkippedKeyStoreTest {
     @After
     fun tearDown() {
         db.close()
+        aliceDb.close()
         ContactMutexRegistry.clear()
     }
 
@@ -204,7 +214,7 @@ class SkippedKeyStoreTest {
         // Alice sends 3 DATA frames. No DH rotation mid-batch: same dhPub on all 3.
         val aliceTransmitted = mutableListOf<ByteArray>()
         val aliceSender = RatchetEncryptAndSend(
-            db, wrapMac, pair.aliceFingerprint,
+            aliceDb, wrapMac, pair.aliceFingerprint,
             transmit = { _, bytes -> aliceTransmitted += bytes }
         )
         repeat(3) { i ->
@@ -340,7 +350,7 @@ class SkippedKeyStoreTest {
         )
         val state = RatchetState.fromBootstrap(pair.aliceInitial)
         val withState = RatchetStatePersistence.saveRatchetState(initial, state, wrapMac)
-        runBlocking { db.contactDao().upsert(withState) }
+        runBlocking { aliceDb.contactDao().upsert(withState) }
     }
 
     private fun seedBobContact(pair: Pair) {

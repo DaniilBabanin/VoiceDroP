@@ -52,13 +52,23 @@ import java.security.SecureRandom
 @Config(sdk = [33])
 class PersistenceInvariantsTest {
 
-    private lateinit var db: AppDatabase
+    // Two DBs — one per device — mirrors production (Alice and Bob are on
+    // separate phones with separate Room files). A single shared Room would
+    // cause Alice's outbound `messages.uuid` row to collide with Bob's
+    // dedup query (`RatchetDecryptAndPersist.isMessageInDb`), making Bob's
+    // first receive of a fresh frame fall through `handleDuplicate` before
+    // his ratchet has been advanced, throwing `AwaitingFirstReceive`.
+    private lateinit var aliceDb: AppDatabase
+    private lateinit var bobDb: AppDatabase
     private lateinit var wrapMac: TestWrapMac
 
     @Before
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+        aliceDb = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        bobDb = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
             .allowMainThreadQueries()
             .build()
         wrapMac = TestWrapMac()
@@ -67,7 +77,8 @@ class PersistenceInvariantsTest {
 
     @After
     fun tearDown() {
-        db.close()
+        aliceDb.close()
+        bobDb.close()
         ContactMutexRegistry.clear()
     }
 
@@ -87,15 +98,15 @@ class PersistenceInvariantsTest {
 
         assertEquals(0, sent.n)
         assertEquals(0, sent.pn)
-        assertEquals(1, db.pendingOutboundFrameDao().countForContact(pair.aliceContactId))
+        assertEquals(1, aliceDb.pendingOutboundFrameDao().countForContact(pair.aliceContactId))
         // Wire bytes ALSO went through transmit (post-commit).
         assertEquals(1, transmitted.size)
         assertArrayEquals(sent.wireBytes, transmitted.single())
         // Message row landed with delivery_state=PENDING.
-        val msg = db.messageDao().getByUuid(sent.frameUuidHex)
+        val msg = aliceDb.messageDao().getByUuid(sent.frameUuidHex)
         assertNotNull(msg); assertEquals(MessageEntity.DELIVERY_PENDING, msg!!.delivery_state)
         // Chain `n` consumed (next advance would be 1).
-        val contactAfter = db.contactDao().getById(pair.aliceContactId)!!
+        val contactAfter = aliceDb.contactDao().getById(pair.aliceContactId)!!
         assertEquals(1, contactAfter.ns)
     }
 
@@ -103,7 +114,7 @@ class PersistenceInvariantsTest {
     fun encrypt_crashBeforeCommit_noStateChange() = runBlocking {
         val pair = bootstrapPair()
         seedAliceContact(pair)
-        val beforeContact = db.contactDao().getById(pair.aliceContactId)!!
+        val beforeContact = aliceDb.contactDao().getById(pair.aliceContactId)!!
 
         // Force a crash inside the txn by making transmit a no-op but having buildMessage
         // throw. Room rolls back; ratchet state, outbox row, and message row must all be absent.
@@ -117,12 +128,12 @@ class PersistenceInvariantsTest {
             assertEquals("simulated crash inside txn", e.message)
         }
 
-        val afterContact = db.contactDao().getById(pair.aliceContactId)!!
+        val afterContact = aliceDb.contactDao().getById(pair.aliceContactId)!!
         assertEquals("ns must not advance on rollback", beforeContact.ns, afterContact.ns)
         assertArrayEquals(beforeContact.rk_wrapped, afterContact.rk_wrapped)
         // rk_hmac equality also confirms the wrap wasn't committed.
         assertArrayEquals(beforeContact.rk_hmac, afterContact.rk_hmac)
-        assertEquals(0, db.pendingOutboundFrameDao().countForContact(pair.aliceContactId))
+        assertEquals(0, aliceDb.pendingOutboundFrameDao().countForContact(pair.aliceContactId))
     }
 
     @Test
@@ -139,14 +150,14 @@ class PersistenceInvariantsTest {
 
         // Row is persisted and recoverable: unwrap+verify the outbox blob and check
         // it matches the wire bytes the sender returned.
-        val row = db.pendingOutboundFrameDao().getByUuid(sent.frameUuid)
+        val row = aliceDb.pendingOutboundFrameDao().getByUuid(sent.frameUuid)
         assertNotNull(row)
         val unwrapped = wrapMac.unwrapAndVerify(
             "pending_outbound_frames.wrapped_frame", row!!.uuid, row.wrapped_frame, row.frame_hmac
         )
         assertArrayEquals(sent.wireBytes, unwrapped)
         // Chain `n` consumed.
-        assertEquals(1, db.contactDao().getById(pair.aliceContactId)!!.ns)
+        assertEquals(1, aliceDb.contactDao().getById(pair.aliceContactId)!!.ns)
     }
 
     @Test
@@ -160,14 +171,14 @@ class PersistenceInvariantsTest {
             }
             fail("expected SessionResetInProgress")
         } catch (_: SessionResetInProgress) { /* ok */ }
-        assertEquals(0, db.pendingOutboundFrameDao().countForContact(pair.aliceContactId))
+        assertEquals(0, aliceDb.pendingOutboundFrameDao().countForContact(pair.aliceContactId))
     }
 
     @Test
     fun bobRole_sendBeforeFirstReceive_throwsAwaitingFirstReceive() = runBlocking {
         val pair = bootstrapPair()
         seedBobContact(pair)
-        val sender = sender(pair, ownFp = pair.bobFingerprint, transmit = { _, _ -> })
+        val sender = sender(pair, db = bobDb, ownFp = pair.bobFingerprint, transmit = { _, _ -> })
         try {
             sender.encryptAndSend(pair.bobContactId, "too soon".toByteArray()) { hex, _, now ->
                 outboundMessage(hex, pair.bobContactId, now)
@@ -175,7 +186,7 @@ class PersistenceInvariantsTest {
             fail("expected AwaitingFirstReceive")
         } catch (_: AwaitingFirstReceive) { /* ok */ }
         // Nothing leaked into outbox.
-        assertEquals(0, db.pendingOutboundFrameDao().countForContact(pair.bobContactId))
+        assertEquals(0, bobDb.pendingOutboundFrameDao().countForContact(pair.bobContactId))
     }
 
     /**
@@ -224,8 +235,8 @@ class PersistenceInvariantsTest {
             assertTrue(String(pt).startsWith("msg-"))
         }
         // And both sides agree the chain reached N.
-        assertEquals(N, db.contactDao().getById(pair.aliceContactId)!!.ns)
-        assertEquals(N, db.pendingOutboundFrameDao().countForContact(pair.aliceContactId))
+        assertEquals(N, aliceDb.contactDao().getById(pair.aliceContactId)!!.ns)
+        assertEquals(N, aliceDb.pendingOutboundFrameDao().countForContact(pair.aliceContactId))
     }
 
     // ---------- DR8: decrypt path ----------
@@ -259,11 +270,11 @@ class PersistenceInvariantsTest {
             inboundMessage(hex, pair.bobContactId, plaintext, ts)
         }
         assertTrue(first is RatchetDecryptAndPersist.Result.Delivered)
-        val bobAfterFirst = db.contactDao().getById(pair.bobContactId)!!
+        val bobAfterFirst = bobDb.contactDao().getById(pair.bobContactId)!!
         assertEquals("nr advanced once", 1, bobAfterFirst.nr)
         assertEquals("ns advanced once for the RECEIPT", 1, bobAfterFirst.ns)
-        assertEquals(1, db.pendingOutboundFrameDao().countForContact(pair.bobContactId))
-        assertEquals(1, db.messageDao().getByContactList(pair.bobContactId).size)
+        assertEquals(1, bobDb.pendingOutboundFrameDao().countForContact(pair.bobContactId))
+        assertEquals(1, bobDb.messageDao().getByContactList(pair.bobContactId).size)
 
         // Second receive of the SAME wire frame: dedup branch.
         val dup = receiver.receive(pair.bobContactId, decoded) { _, _, _, _ ->
@@ -272,15 +283,15 @@ class PersistenceInvariantsTest {
         }
         assertTrue(dup is RatchetDecryptAndPersist.Result.DuplicateData)
 
-        val bobAfterDup = db.contactDao().getById(pair.bobContactId)!!
+        val bobAfterDup = bobDb.contactDao().getById(pair.bobContactId)!!
         assertEquals("nr unchanged — receiving chain MUST NOT re-advance", bobAfterFirst.nr, bobAfterDup.nr)
         assertEquals("ns DID advance once more (re-enqueued RECEIPT)", 2, bobAfterDup.ns)
-        assertEquals("a second RECEIPT row exists", 2, db.pendingOutboundFrameDao().countForContact(pair.bobContactId))
-        assertEquals("messages table still has exactly one row", 1, db.messageDao().getByContactList(pair.bobContactId).size)
+        assertEquals("a second RECEIPT row exists", 2, bobDb.pendingOutboundFrameDao().countForContact(pair.bobContactId))
+        assertEquals("messages table still has exactly one row", 1, bobDb.messageDao().getByContactList(pair.bobContactId).size)
 
         // Both RECEIPT outbox rows must ack the SAME DATA UUID, but be themselves
         // distinct frames (distinct frame UUIDs, distinct ciphertexts).
-        val outboxRows = db.pendingOutboundFrameDao().getByContact(pair.bobContactId)
+        val outboxRows = bobDb.pendingOutboundFrameDao().getByContact(pair.bobContactId)
         assertEquals(2, outboxRows.size)
         assertEquals(
             "both RECEIPTs are RECEIPT frames",
@@ -329,7 +340,7 @@ class PersistenceInvariantsTest {
         }
         val tampered = (FrameCodec.decode(badBytes) as FrameCodec.DecodeResult.Ok).frame
 
-        val bobBefore = db.contactDao().getById(pair.bobContactId)!!
+        val bobBefore = bobDb.contactDao().getById(pair.bobContactId)!!
         val receiver = receiver(pair)
         try {
             receiver.receive(pair.bobContactId, tampered) { _, _, _, _ ->
@@ -339,7 +350,7 @@ class PersistenceInvariantsTest {
             fail("expected RatchetCryptoFailure")
         } catch (_: RatchetCryptoFailure) { /* ok */ }
 
-        val bobAfter = db.contactDao().getById(pair.bobContactId)!!
+        val bobAfter = bobDb.contactDao().getById(pair.bobContactId)!!
         // Persisted ratchet state byte-identical. Wrap IVs are random, so byte
         // equality on rk_wrapped is itself proof that saveRatchetState wasn't run.
         assertEquals(bobBefore.ns, bobAfter.ns)
@@ -351,11 +362,11 @@ class PersistenceInvariantsTest {
         assertArrayEquals(bobBefore.rk_hmac, bobAfter.rk_hmac)
         assertEquals(bobBefore.ckr_wrapped, bobAfter.ckr_wrapped)
         // No skipped-key rows leaked.
-        assertEquals(0, db.skippedMessageKeyDao().countForContact(pair.bobContactId))
+        assertEquals(0, bobDb.skippedMessageKeyDao().countForContact(pair.bobContactId))
         // No outbox row (no RECEIPT enqueued).
-        assertEquals(0, db.pendingOutboundFrameDao().countForContact(pair.bobContactId))
+        assertEquals(0, bobDb.pendingOutboundFrameDao().countForContact(pair.bobContactId))
         // No message row.
-        assertEquals(0, db.messageDao().getByContactList(pair.bobContactId).size)
+        assertEquals(0, bobDb.messageDao().getByContactList(pair.bobContactId).size)
         // §8.2 counter ticked OUTSIDE the txn.
         assertEquals(1, bobAfter.consecutive_aead_failures)
     }
@@ -393,7 +404,7 @@ class PersistenceInvariantsTest {
 
         // From here: 3 more inbound decrypts AND 3 Bob-originated sends racing.
         val bobOutboundTransmitted = java.util.Collections.synchronizedList(mutableListOf<ByteArray>())
-        val bobSender = sender(pair, ownFp = pair.bobFingerprint) { _, bytes -> bobOutboundTransmitted += bytes }
+        val bobSender = sender(pair, db = bobDb, ownFp = pair.bobFingerprint) { _, bytes -> bobOutboundTransmitted += bytes }
         val nOutbound = 3
         val nInboundParallel = 3  // frames[1..3]
         val totalOps = nInboundParallel + nOutbound
@@ -419,13 +430,13 @@ class PersistenceInvariantsTest {
         // Bob's first frame[0] consumed one ns step (for its RECEIPT). Each of
         // the parallel inbound frames consumes one more (RECEIPT). Each of the
         // parallel sends consumes one more (DATA). Total ns = 1 + totalOps.
-        val bobAfter = db.contactDao().getById(pair.bobContactId)!!
+        val bobAfter = bobDb.contactDao().getById(pair.bobContactId)!!
         val expectedNs = 1 + totalOps
         assertEquals("ns advanced exactly once per send-chain consumer", expectedNs, bobAfter.ns)
         assertEquals("nr advanced once per inbound DATA", nInbound, bobAfter.nr)
 
         // Inspect Bob's outbox: 1 RECEIPT (frame[0]) + 3 RECEIPTs (parallel) + 3 DATAs (parallel) = 7 rows.
-        val outbox = db.pendingOutboundFrameDao().getByContact(pair.bobContactId)
+        val outbox = bobDb.pendingOutboundFrameDao().getByContact(pair.bobContactId)
         assertEquals(expectedNs, outbox.size)
 
         // No (dhPub, n) collision. All Bob-outbox frames share Bob's DHs.pub
@@ -493,8 +504,8 @@ class PersistenceInvariantsTest {
             rkA.contentEquals(rkB)
         )
 
-        overwriteRk(pair.aliceContactId, rkA, pair.aliceInitial)
-        overwriteRk(pair.bobContactId, rkB, pair.bobInitial)
+        overwriteRk(pair.aliceContactId, aliceDb, rkA, pair.aliceInitial)
+        overwriteRk(pair.bobContactId, bobDb, rkB, pair.bobInitial)
 
         val transmitted = mutableListOf<ByteArray>()
         val sender = sender(pair, transmit = { _, b -> transmitted += b })
@@ -513,7 +524,7 @@ class PersistenceInvariantsTest {
             // expected — AEAD fired
         }
 
-        val bob = db.contactDao().getById(pair.bobContactId)!!
+        val bob = bobDb.contactDao().getById(pair.bobContactId)!!
         assertEquals("DR14 counter must advance on AEAD failure", 1, bob.consecutive_aead_failures)
     }
 
@@ -548,8 +559,8 @@ class PersistenceInvariantsTest {
 
         // Both sides synthetically bootstrap to the same R via different
         // nonces — mirrors the lost-wire / independent-auto-reset scenario.
-        overwriteRk(pair.aliceContactId, rkA, pair.aliceInitial)
-        overwriteRk(pair.bobContactId, rkB, pair.bobInitial)
+        overwriteRk(pair.aliceContactId, aliceDb, rkA, pair.aliceInitial)
+        overwriteRk(pair.bobContactId, bobDb, rkB, pair.bobInitial)
 
         val transmitted = mutableListOf<ByteArray>()
         val sender = sender(pair, transmit = { _, b -> transmitted += b })
@@ -568,7 +579,7 @@ class PersistenceInvariantsTest {
             // expected
         }
 
-        val bob = db.contactDao().getById(pair.bobContactId)!!
+        val bob = bobDb.contactDao().getById(pair.bobContactId)!!
         assertEquals(1, bob.consecutive_aead_failures)
     }
 
@@ -635,11 +646,11 @@ class PersistenceInvariantsTest {
         // expecting_ack=1, fresh rk_wrapped, our nonce persisted; Bob also
         // carries dhs (post-reset eph), Alice's dhs stays nil.
         installPostInitState(
-            pair.aliceContactId, pair.aliceInitial, rkAlice, aliceNonce,
+            pair.aliceContactId, aliceDb, pair.aliceInitial, rkAlice, aliceNonce,
             postResetEphPriv = null, postResetEphPub = null
         )
         installPostInitState(
-            pair.bobContactId, pair.bobInitial, rkBob, bobNonce,
+            pair.bobContactId, bobDb, pair.bobInitial, rkBob, bobNonce,
             postResetEphPriv = bobPostResetPriv, postResetEphPub = bobPostResetPub
         )
 
@@ -663,14 +674,14 @@ class PersistenceInvariantsTest {
         )
 
         val aliceReceiver = ResetReceive(
-            db = db,
+            db = aliceDb,
             wrapMac = wrapMac,
             ownFingerprint32 = pair.aliceFingerprint,
             idSharedSecretFor = { idShared.copyOf() },
             clock = { 1_000_000L }
         )
         val bobReceiver = ResetReceive(
-            db = db,
+            db = bobDb,
             wrapMac = wrapMac,
             ownFingerprint32 = pair.bobFingerprint,
             idSharedSecretFor = { idShared.copyOf() },
@@ -683,8 +694,8 @@ class PersistenceInvariantsTest {
         assertSame("Alice re-acks Bob's concurrent init", ResetReceive.Outcome.Reacked, aliceOutcome)
         assertSame("Bob re-acks Alice's concurrent init", ResetReceive.Outcome.Reacked, bobOutcome)
 
-        val aliceAfter = db.contactDao().getById(pair.aliceContactId)!!
-        val bobAfter = db.contactDao().getById(pair.bobContactId)!!
+        val aliceAfter = aliceDb.contactDao().getById(pair.aliceContactId)!!
+        val bobAfter = bobDb.contactDao().getById(pair.bobContactId)!!
         assertEquals("Alice still at R=1", 1, aliceAfter.reset_epoch)
         assertEquals("Bob still at R=1", 1, bobAfter.reset_epoch)
         assertEquals("Alice still expecting ack on her own init", 1, aliceAfter.expecting_ack)
@@ -716,11 +727,11 @@ class PersistenceInvariantsTest {
         // Both sides should have re-enqueued an acknowledger RESET row.
         assertTrue(
             "Alice's re-ack landed in outbox",
-            db.pendingOutboundFrameDao().countForContact(pair.aliceContactId) >= 1
+            aliceDb.pendingOutboundFrameDao().countForContact(pair.aliceContactId) >= 1
         )
         assertTrue(
             "Bob's re-ack landed in outbox",
-            db.pendingOutboundFrameDao().countForContact(pair.bobContactId) >= 1
+            bobDb.pendingOutboundFrameDao().countForContact(pair.bobContactId) >= 1
         )
     }
 
@@ -733,6 +744,7 @@ class PersistenceInvariantsTest {
      */
     private fun installPostInitState(
         contactId: String,
+        db: AppDatabase,
         fromBootstrap: Bootstrap.InitialState,
         rk0: ByteArray,
         resetNonce: ByteArray,
@@ -805,6 +817,7 @@ class PersistenceInvariantsTest {
      */
     private fun overwriteRk(
         contactId: String,
+        db: AppDatabase,
         newRk: ByteArray,
         fromBootstrap: Bootstrap.InitialState
     ) = runBlocking {
@@ -870,7 +883,7 @@ class PersistenceInvariantsTest {
         val state = RatchetState.fromBootstrap(pair.aliceInitial)
         val withState = RatchetStatePersistence.saveRatchetState(initial, state, wrapMac)
             .copy(expecting_ack = expectingAck)
-        runBlocking { db.contactDao().upsert(withState) }
+        runBlocking { aliceDb.contactDao().upsert(withState) }
     }
 
     private fun seedBobContact(pair: Pair) {
@@ -882,18 +895,27 @@ class PersistenceInvariantsTest {
         )
         val state = RatchetState.fromBootstrap(pair.bobInitial)
         val withState = RatchetStatePersistence.saveRatchetState(initial, state, wrapMac)
-        runBlocking { db.contactDao().upsert(withState) }
+        runBlocking { bobDb.contactDao().upsert(withState) }
     }
 
+    /**
+     * Sender bound to a specific device's DB. Defaults to Alice; pass [db] +
+     * [ownFp] explicitly when the test exercises Bob's send path.
+     */
     private fun sender(
         pair: Pair,
+        db: AppDatabase = aliceDb,
         ownFp: ByteArray = pair.aliceFingerprint,
         transmit: suspend (String, ByteArray) -> Unit
     ): RatchetEncryptAndSend =
         RatchetEncryptAndSend(db, wrapMac, ownFp, transmit)
 
-    /** Decrypt-side wired up as Bob (DR8 entry under his fingerprint). */
-    private fun receiver(pair: Pair, ownFp: ByteArray = pair.bobFingerprint): RatchetDecryptAndPersist =
+    /** Receiver bound to a specific device's DB. Defaults to Bob's side. */
+    private fun receiver(
+        pair: Pair,
+        db: AppDatabase = bobDb,
+        ownFp: ByteArray = pair.bobFingerprint
+    ): RatchetDecryptAndPersist =
         RatchetDecryptAndPersist(db, wrapMac, ownFp)
 
     private fun outboundMessage(uuidHex: String, contactId: String, now: Long): MessageEntity =
