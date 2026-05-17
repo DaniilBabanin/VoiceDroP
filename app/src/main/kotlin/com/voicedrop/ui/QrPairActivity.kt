@@ -28,6 +28,8 @@ import com.voicedrop.crypto.ContactKey
 import com.voicedrop.crypto.KeyManager
 import com.voicedrop.crypto.MessagePayload
 import com.voicedrop.crypto.RatchetEncryptAndSend
+import com.voicedrop.crypto.RatchetState
+import com.voicedrop.crypto.RatchetStatePersistence
 import com.voicedrop.crypto.RePairWipe
 import com.voicedrop.service.VoiceDropService
 import com.voicedrop.storage.ActiveContactsPrefs
@@ -460,40 +462,33 @@ class QrPairActivity : AppCompatActivity() {
             RePairWipe(db).wipe(repairId)
         }
 
-        val rowId = fingerprint.toByteArray(Charsets.UTF_8)
-        val (rkWrapped, rkHmac) = keyManager.wrapAndMac("rk", rowId, initial.rootKey)
+        // Route the first-pairing write through RatchetStatePersistence so the
+        // wrap-binding column names match what loadRatchetState reads. The DR5
+        // implementation used to inline `wrapAndMac("rk", …)` / `wrapAndMac("dhs_priv", …)`
+        // here while persistence read with `"contacts.rk_wrapped"` / `"contacts.dhs_priv_wrapped"`
+        // — every first send then failed with WrapHmacMismatch on the load.
+        val baseContact = ContactEntity(
+            id = fingerprint,
+            name = card.name,
+            publicKeyBase64 = card.pk,
+            addedAt = System.currentTimeMillis()
+        )
+        val state = RatchetState(
+            dhsPriv = initial.dhsPriv,
+            dhsPub = initial.dhsPub,
+            dhrPub = initial.dhrPub,
+            rk = initial.rootKey
+        )
+        val contact = RatchetStatePersistence.saveRatchetState(baseContact, state, keyManager)
+        // saveRatchetState reads but does not zero the input ByteArrays.
         initial.rootKey.fill(0)
-
-        val dhsPrivWrapped: ByteArray?
-        val dhsPrivHmac: ByteArray?
-        val dhsPrivLocal = initial.dhsPriv
-        if (dhsPrivLocal != null) {
-            val (w, h) = keyManager.wrapAndMac("dhs_priv", rowId, dhsPrivLocal)
-            dhsPrivWrapped = w
-            dhsPrivHmac = h
-            dhsPrivLocal.fill(0)
-        } else {
-            dhsPrivWrapped = null
-            dhsPrivHmac = null
-        }
+        initial.dhsPriv?.fill(0)
 
         // Wipe the activity-held bootstrap eph priv: Bob no longer needs the raw copy
         // (it's now wrapped into DB), Alice never needed it past this point.
         myBootstrapEphPriv.fill(0)
         bootstrapEphRetired = true
 
-        val contact = ContactEntity(
-            id = fingerprint,
-            name = card.name,
-            publicKeyBase64 = card.pk,
-            addedAt = System.currentTimeMillis(),
-            rk_wrapped = rkWrapped,
-            rk_hmac = rkHmac,
-            dhs_priv_wrapped = dhsPrivWrapped,
-            dhs_priv_hmac = dhsPrivHmac,
-            dhs_pub = initial.dhsPub,
-            dhr_pub = initial.dhrPub
-        )
         repository.upsertContact(contact)
         if (ActiveContactsPrefs.getDefaultId(this) == null) {
             ActiveContactsPrefs.setDefaultId(this, contact.id)
