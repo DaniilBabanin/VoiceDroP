@@ -70,6 +70,17 @@ class TalkTileService : TileService() {
                         val target = ActiveContactsPrefs.resolveRecipient(
                             this@TalkTileService, contacts
                         ) ?: return@launch
+                        // DR17.5 W4 — silent record gating. The default-recipient may be
+                        // freshly paired without `dhr_pub` (Bob waiting for Alice's HELLO);
+                        // recording would throw AwaitingFirstReceive on send. Show the
+                        // picker instead so user can pick a different contact (or wait).
+                        if (target.dhr_pub == null) {
+                            Log.i(TAG, "onClick: default target ${target.id.take(8)} not yet bootstrapped — showing picker")
+                            showDialog(ContactPickerDialog(this@TalkTileService, contacts) { id ->
+                                startRecording(id)
+                            })
+                            return@launch
+                        }
                         startRecording(target.id)
                     } catch (e: Exception) {
                         Log.e(TAG, "onClick coroutine failed", e)

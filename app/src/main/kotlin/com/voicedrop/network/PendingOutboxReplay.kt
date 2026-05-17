@@ -14,10 +14,12 @@ import kotlinx.coroutines.withContext
  * DR11 — §8.6 outbox replay worker.
  *
  * Drains [com.voicedrop.storage.PendingOutboundFrameEntity] (the v2 outbox).
- * Triggered from `App.onCreate` and on `ConnectivityManager.NetworkCallback.onAvailable`
- * once the v2 wire format replaces v1 [com.voicedrop.crypto.MessageCrypto] in
- * `ConnectionManager.processFrame`; until then this class is exercised only by
- * tests + the encrypt path's post-commit `.also { transmit(...) }` short-circuit.
+ * Triggered from `VoiceDropService.onCreate` (startup), the
+ * `ConnectivityManager.NetworkCallback.onAvailable` callback, LAN/presence
+ * peer-appearance hooks, and the active-backoff retry loop inside
+ * `ConnectionManager`. The post-DR17.5 wire path uses [com.voicedrop.crypto.RatchetEncryptAndSend]
+ * (encrypt) + [com.voicedrop.crypto.RatchetDecryptAndPersist] (decrypt) — the
+ * v1 frame builder/parser is gone (`MessageCrypto.kt` deleted on the cutover).
  *
  * Lifecycle per row:
  *

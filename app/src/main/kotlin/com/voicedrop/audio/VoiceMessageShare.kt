@@ -3,11 +3,7 @@ package com.voicedrop.audio
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.util.Base64
 import androidx.core.content.FileProvider
-import com.voicedrop.crypto.ContactKey
-import com.voicedrop.crypto.KeyManager
-import com.voicedrop.crypto.MessageCrypto
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.MessageRepository
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +13,11 @@ import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
+/**
+ * Decodes a stored `.opus` voice message into a `.wav` for the system share
+ * sheet. DR17.5 cutover (decision 2b): audio is plaintext on disk — trusts
+ * Android FS encryption, drops the v1 ECDH-AEAD-at-rest envelope.
+ */
 object VoiceMessageShare {
 
     private const val SAMPLE_RATE = 16000
@@ -28,18 +29,11 @@ object VoiceMessageShare {
         val repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())
 
         val message = repository.getMessage(uuid) ?: return@withContext null
-        val encPath = message.encryptedFilePath ?: return@withContext null
-        val encFile = File(encPath)
-        if (!encFile.exists()) return@withContext null
+        val opusPath = message.encryptedFilePath ?: return@withContext null
+        val opusFile = File(opusPath)
+        if (!opusFile.exists()) return@withContext null
 
-        val contact = repository.getContact(message.contactId) ?: return@withContext null
-        val keyManager = KeyManager(context)
-        val sessionKey = ContactKey.deriveSessionKey(
-            keyManager.getPrivateKeyBytes(),
-            Base64.decode(contact.publicKeyBase64, Base64.NO_WRAP)
-        )
-
-        val opusStream = MessageCrypto.decrypt(sessionKey, encFile.readBytes())
+        val opusStream = opusFile.readBytes()
 
         val shareDir = File(context.cacheDir, "share").apply { mkdirs() }
         // Drop any stale WAVs from prior shares — the chooser target may still hold a grant,

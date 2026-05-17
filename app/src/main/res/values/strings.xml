@@ -89,4 +89,20 @@
     <string name="widget_loading">…</string>
     <string name="widget_contact_missing">?</string>
     <string name="contact_active_checkbox_description">Use this contact for the quick tile</string>
+
+    <!-- DR17.5 W6 — AEAD-fail soft prompt banner (dr14 §6.4). Shown when consecutive
+         AEAD failures cross the threshold inside a 10-minute window. Tap dismisses
+         for 24h. -->
+    <string name="aead_soft_prompt_banner">Messages can\'t be decrypted from %s. Tap here to reset the secure session.</string>
+    <string name="aead_soft_prompt_banner_multi">Some contacts have undecryptable messages. Tap here to review.</string>
+
+    <!-- DR17.5 W5 — Reset / re-pair affordances in contact detail. -->
+    <string name="reset_secure_session">Reset secure session</string>
+    <string name="reset_secure_session_description">Generates a fresh ratchet. The peer will see a reset notification.</string>
+    <string name="repair_contact_title">Identity key compromised? Re-pair</string>
+    <string name="repair_contact_description">Wipes all message history with this contact and re-scans a new QR.</string>
+    <string name="repair_warning">Re-pairing wipes all message history with this contact.</string>
+    <string name="reset_in_progress">Reset in progress — waiting for the peer to acknowledge.</string>
+    <string name="reset_initiated">Secure session reset — waiting for peer to acknowledge.</string>
+    <string name="reset_refused_budget">Too many recent resets. Try again later or re-pair.</string>
 </resources>

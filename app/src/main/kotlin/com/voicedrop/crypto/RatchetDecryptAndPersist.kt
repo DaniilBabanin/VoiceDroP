@@ -81,7 +81,15 @@ class RatchetDecryptAndPersist(
      * @param buildInboundMessage caller-supplied factory for the INBOUND
      *   [MessageEntity]. Only invoked on the DATA fresh-delivery path. Receives
      *   the decrypted plaintext, the frame UUID (hex + bytes), and the wire
-     *   timestamp from the frame header.
+     *   timestamp from the frame header. **Returning null skips the `messages`
+     *   insert** — used by the DR17.5 inner-plaintext dispatcher for HELLO
+     *   (sentinel, no UI row), DELETE (handles its own row delete inside the
+     *   same txn), and unknown future kinds (per the forward-compat contract
+     *   in dr17.5 §"Forward compatibility": RECEIPT enqueues, payload drops
+     *   silently). The callback runs INSIDE the txn so any side-effects it
+     *   performs (e.g. raw-SQL row delete via `db.openHelper.writableDatabase`)
+     *   are atomic with state advance and RECEIPT enqueue. Throwing rolls back
+     *   the txn and surfaces the exception to the caller.
      *
      * Throws:
      *   - [RatchetCryptoFailure] — AEAD failure (txn rolled back; state untouched).
@@ -98,7 +106,7 @@ class RatchetDecryptAndPersist(
             frameUuidHex: String,
             frameUuidBytes: ByteArray,
             timestampMs: Long
-        ) -> MessageEntity
+        ) -> MessageEntity?
     ): Result = ContactMutexRegistry.forContact(contactId).withLock {
         try {
             withContext(Dispatchers.IO) {
@@ -120,7 +128,7 @@ class RatchetDecryptAndPersist(
     private fun commitInsideTxn(
         contactId: String,
         frame: FrameCodec.DecodedFrame,
-        buildInboundMessage: (ByteArray, String, ByteArray, Long) -> MessageEntity
+        buildInboundMessage: (ByteArray, String, ByteArray, Long) -> MessageEntity?
     ): Result {
         val frameUuidHex = bytesToHex(frame.uuid)
 
@@ -159,7 +167,7 @@ class RatchetDecryptAndPersist(
         return when (frame.kind) {
             FrameCodec.FRAME_KIND_DATA -> {
                 val message = buildInboundMessage(plaintext, frameUuidHex, frame.uuid, frame.timestampMs)
-                insertInboundMessageBlocking(message)
+                if (message != null) insertInboundMessageBlocking(message)
 
                 // 4) Enqueue authenticated RECEIPT — advances Ns, writes outbox row.
                 val contactAfterReceipt =

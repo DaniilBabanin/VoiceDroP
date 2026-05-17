@@ -51,7 +51,10 @@ class RatchetEncryptAndSend(
      * @param buildMessage caller-supplied factory for the user-visible
      *   [MessageEntity]. Receives the wire-frame UUID (both hex and bytes) and
      *   the same `now` timestamp that landed in the frame header so the row's
-     *   `createdAt` lines up with the wire timestamp.
+     *   `createdAt` lines up with the wire timestamp. **Returning null skips the
+     *   `messages` row** — used for non-user-visible kinds (DR17.5 inner
+     *   schema: HELLO sentinel) where state-advance + outbox-row are wanted
+     *   but the `messages` table should NOT acquire a phantom outbound row.
      *
      * Throws:
      *   - [SessionResetInProgress] — `contact.expecting_ack != 0`. UI gates send.
@@ -63,7 +66,7 @@ class RatchetEncryptAndSend(
     suspend fun encryptAndSend(
         contactId: String,
         plaintext: ByteArray,
-        buildMessage: (frameUuidHex: String, frameUuidBytes: ByteArray, now: Long) -> MessageEntity
+        buildMessage: (frameUuidHex: String, frameUuidBytes: ByteArray, now: Long) -> MessageEntity?
     ): SentFrame = ContactMutexRegistry.forContact(contactId).withLock {
         val frame = withContext(Dispatchers.IO) {
             db.runInTransaction(Callable { commitInsideTxn(contactId, plaintext, buildMessage) })
@@ -76,7 +79,7 @@ class RatchetEncryptAndSend(
     private fun commitInsideTxn(
         contactId: String,
         plaintext: ByteArray,
-        buildMessage: (String, ByteArray, Long) -> MessageEntity
+        buildMessage: (String, ByteArray, Long) -> MessageEntity?
     ): SentFrame {
         // Room's @Dao suspend methods can't be called from a sync `runInTransaction`
         // block; use blocking equivalents (or @Query directly) here.
@@ -144,7 +147,7 @@ class RatchetEncryptAndSend(
 
         val frameUuidHex = bytesToHex(frameUuid)
         val message = buildMessage(frameUuidHex, frameUuid, now)
-        insertMessageBlocking(message)
+        if (message != null) insertMessageBlocking(message)
 
         // State is now committed-on-commit. Caller transmits after the txn returns.
         return SentFrame(

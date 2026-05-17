@@ -17,6 +17,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.voicedrop.R
+import com.voicedrop.crypto.AeadFailureSoftPrompt
 import com.voicedrop.service.AutoDeleteWorker
 import com.voicedrop.service.VoiceDropService
 import com.voicedrop.storage.AppDatabase
@@ -24,9 +25,12 @@ import com.voicedrop.storage.ContactEntity
 import com.voicedrop.storage.MessageRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -37,6 +41,8 @@ class ContactListActivity : AppCompatActivity() {
     private lateinit var repository: MessageRepository
     private lateinit var adapter: ContactAdapter
     private lateinit var recyclerView: RecyclerView
+    private lateinit var aeadSoftPrompt: AeadFailureSoftPrompt
+    private var aeadBannerPollJob: Job? = null
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -53,6 +59,7 @@ class ContactListActivity : AppCompatActivity() {
 
         val db = AppDatabase.getInstance(this)
         repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())
+        aeadSoftPrompt = AeadFailureSoftPrompt(db)
 
         AutoDeleteWorker.schedule(this)
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
@@ -96,6 +103,51 @@ class ContactListActivity : AppCompatActivity() {
                     recyclerView.visibility = View.VISIBLE
                     adapter.submitList(contacts)
                 }
+            }
+        }
+        startAeadBannerPolling()
+    }
+
+    /**
+     * DR17.5 W6 — poll AeadFailureSoftPrompt for any contact in [State.ShouldPrompt]
+     * state. AeadFailureSoftPrompt.evaluate is suspend (one-shot), not a Flow — we
+     * tick every 5s to pick up new threshold crossings without a Room observer.
+     * Tap on the banner dismisses for 24h (per dr14 §6.4).
+     */
+    private fun startAeadBannerPolling() {
+        val banner = findViewById<TextView>(R.id.banner_aead_soft_prompt)
+        aeadBannerPollJob?.cancel()
+        aeadBannerPollJob = scope.launch {
+            while (true) {
+                val contacts = try {
+                    repository.getAllContacts().first()
+                } catch (_: Exception) { emptyList() }
+                val prompts = withContext(Dispatchers.IO) {
+                    contacts.mapNotNull { c ->
+                        val state = aeadSoftPrompt.evaluate(c.id)
+                        if (state is AeadFailureSoftPrompt.State.ShouldPrompt) c else null
+                    }
+                }
+                if (prompts.isEmpty()) {
+                    banner.visibility = View.GONE
+                    banner.setOnClickListener(null)
+                } else {
+                    banner.visibility = View.VISIBLE
+                    banner.text = if (prompts.size == 1) {
+                        getString(R.string.aead_soft_prompt_banner, prompts[0].name)
+                    } else {
+                        getString(R.string.aead_soft_prompt_banner_multi)
+                    }
+                    banner.setOnClickListener {
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                prompts.forEach { aeadSoftPrompt.dismiss(it.id) }
+                            }
+                            banner.visibility = View.GONE
+                        }
+                    }
+                }
+                delay(5_000L)
             }
         }
     }
