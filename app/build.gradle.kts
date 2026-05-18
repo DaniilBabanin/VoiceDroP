@@ -15,8 +15,8 @@ android {
         applicationId = "com.voicedrop"
         minSdk = 28
         targetSdk = 36
-        versionCode = 67
-        versionName = "1.2.0.11"
+        versionCode = 68
+        versionName = "1.2.0.12"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -98,4 +98,52 @@ tasks.withType<Test>().configureEach {
         showStackTraces = true
         showCauses = true
     }
+}
+
+// DR19 §12.8 — ratchet-path lint. Belt-and-braces against two regressions
+// the strict-commit-ordering ratchet pipeline cannot survive:
+//   1. Room's `withTransaction` coroutine extension — releases the per-contact
+//      mutex on suspension points inside the transaction, which breaks the
+//      [dr7] strict-commit-ordering invariant. The ratchet pipeline must use
+//      `db.runInTransaction(Callable {...})` exclusively.
+//   2. Direct `Cipher.getInstance(...)` calls in Ratchet*.kt — every AEAD use
+//      must funnel through `KeyManager.wrapAndMac` / `unwrapAndVerify` (or the
+//      `ChaCha20Poly1305Aead` wrapper) so the (column, row) HMAC binding from
+//      [dr2] is enforced.
+// Comments are stripped before matching so the deliberate "we don't use
+// withTransaction" explainer in RatchetEncryptAndSend.kt doesn't trip.
+val ratchetLint by tasks.registering {
+    val ratchetSources = fileTree("src/main/kotlin/com/voicedrop/crypto") {
+        include("Ratchet*.kt")
+    }
+    inputs.files(ratchetSources)
+    doLast {
+        val violations = mutableListOf<String>()
+        val lineCommentRe = Regex("""//.*$""")
+        val blockCommentRe = Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL)
+        val withTxRe = Regex("""(\.withTransaction\s*[{(]|\bimport\s+androidx\.room\.withTransaction\b)""")
+        val cipherRe = Regex("""\bCipher\.getInstance\b""")
+        ratchetSources.forEach { file ->
+            val stripped = blockCommentRe.replace(file.readText(), "")
+            stripped.lineSequence().forEachIndexed { idx, raw ->
+                val line = lineCommentRe.replace(raw, "")
+                if (withTxRe.containsMatchIn(line)) {
+                    violations.add("${file.name}:${idx + 1}: withTransaction is forbidden in Ratchet*.kt — use db.runInTransaction(Callable {...}) (DR19 §12.8 / dr7)")
+                }
+                if (cipherRe.containsMatchIn(line)) {
+                    violations.add("${file.name}:${idx + 1}: direct Cipher.getInstance is forbidden in Ratchet*.kt — must go through KeyManager.wrapAndMac / ChaCha20Poly1305Aead (DR19 §12.8 / dr2)")
+                }
+            }
+        }
+        if (violations.isNotEmpty()) {
+            throw GradleException(
+                "Ratchet-path lint failed:\n  " + violations.joinToString("\n  ")
+            )
+        }
+        logger.lifecycle("ratchetLint: ${ratchetSources.files.size} file(s) checked, no violations")
+    }
+}
+
+tasks.named("check") {
+    dependsOn(ratchetLint)
 }
