@@ -38,7 +38,6 @@ class MessageRepositoryTest {
         id = id,
         name = name,
         publicKeyBase64 = "dGVzdA==",
-        sharedSecretWrapped = ByteArray(0),
         addedAt = System.currentTimeMillis()
         // autoDeleteAfterMs defaults to 0L
     )

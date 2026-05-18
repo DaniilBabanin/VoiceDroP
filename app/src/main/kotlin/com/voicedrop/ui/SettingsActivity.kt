@@ -124,23 +124,24 @@ class SettingsActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
             scope.launch(Dispatchers.IO) {
-                try {
+                // Any HTTP response (even 404 from an unmatched route) proves the
+                // worker is reachable. We only differentiate transport failures
+                // (DNS, timeout, TLS) — those land in the catch block.
+                val reachable = try {
                     val testUrl = url.replace("wss://", "https://").replace("ws://", "http://")
                     val connection = java.net.URL(testUrl).openConnection() as java.net.HttpURLConnection
                     connection.connectTimeout = 5000
                     connection.readTimeout = 5000
-                    val code = connection.responseCode
-                    scope.launch(Dispatchers.Main) {
-                        Toast.makeText(
-                            this@SettingsActivity,
-                            if (code in 100..599) getString(R.string.connection_ok) + " (HTTP $code)" else getString(R.string.connection_failed),
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
+                    connection.responseCode
+                    true
                 } catch (e: Exception) {
-                    scope.launch(Dispatchers.Main) {
-                        Toast.makeText(this@SettingsActivity, getString(R.string.connection_failed) + ": ${e.message}", Toast.LENGTH_LONG).show()
-                    }
+                    Log.w(TAG, "test connection failed: ${e.message}")
+                    false
+                }
+                scope.launch(Dispatchers.Main) {
+                    val msg = if (reachable) getString(R.string.connection_ok)
+                              else getString(R.string.connection_failed)
+                    Toast.makeText(this@SettingsActivity, msg, Toast.LENGTH_SHORT).show()
                 }
             }
         }

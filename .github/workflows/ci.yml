@@ -56,9 +56,22 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      # DR19 §12.5 — block reflection allowances on com.voicedrop.crypto.**
+      # before they can land via PR. Mirrored in release.yml.
+      - name: Lint proguard rules for crypto reflection allowances
+        run: |
+          set -euo pipefail
+          OFFENDERS=$(grep -nE 'com\.voicedrop\.crypto' app/proguard-rules.pro || true)
+          if [ -n "$OFFENDERS" ]; then
+            echo "::error::proguard-rules.pro must not -keep com.voicedrop.crypto.** (DR19 §12.5)"
+            echo "$OFFENDERS"
+            exit 1
+          fi
+          echo "proguard crypto reflection check OK"
+
       - name: Build debug APK
         run: |
-          ./gradlew assembleDebug --stacktrace 2>&1 | tee /tmp/build.log
+          ./gradlew assembleDebug :app:ratchetLint --stacktrace 2>&1 | tee /tmp/build.log
           build_exit=${PIPESTATUS[0]}
           if [ $build_exit -ne 0 ]; then
             echo ""

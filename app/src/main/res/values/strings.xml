@@ -40,17 +40,22 @@
     <string name="share_unavailable">Voice message is unavailable</string>
     <string name="verification_title">Verify Pairing</string>
     <string name="verification_intro">Verification code:</string>
-    <string name="verification_compare_hint">Compare this code with your contact.</string>
+    <string name="verification_compare_hint">Both devices should show the same emojis. If they do, tap “Match” on this device and on the other device. If the emojis don\'t match, tap “Different — cancel” on both devices and try pairing again.</string>
     <string name="verification_consent">By pairing, both parties agree that voice messages may be recorded and sent between paired devices.</string>
-    <string name="verification_codes_match">Codes match — confirm</string>
-    <string name="verification_codes_differ">Codes differ — abort</string>
+    <string name="verification_pair_with_peer">Match — pair with %1$s</string>
+    <string name="verification_emojis_differ">Different — cancel</string>
+    <string name="verification_with_peer_title">Verify pairing with %1$s</string>
+    <string name="qr_pair_helper_text">Have the other device scan this code. Then switch to “Scan” and read their code to compare verification emojis.</string>
     <string name="confirm">Confirm</string>
     <string name="cancel">Cancel</string>
     <string name="pairing_success">Contact added successfully</string>
     <string name="pairing_failed">Pairing failed: mismatched verification code</string>
-    <string name="connection_ok">Connection OK</string>
-    <string name="connection_failed">Connection failed</string>
+    <string name="connection_ok">Server reachable</string>
+    <string name="connection_failed">Connection failed — server not reachable</string>
     <string name="url_saved">URL saved</string>
+    <string name="open_settings">Open Settings</string>
+    <string name="pair_blocked_no_url_title">Signaling server not configured</string>
+    <string name="pair_blocked_no_url_message">Pairing needs a signaling server URL. Set one in Settings (e.g. wss://your-worker.workers.dev/signal) before pairing a contact.</string>
     <string name="permission_denied">Permission denied</string>
     <string name="open_source_licenses">Open Source Licenses</string>
     <string name="privacy_policy">Privacy Policy</string>
@@ -89,4 +94,20 @@
     <string name="widget_loading">…</string>
     <string name="widget_contact_missing">?</string>
     <string name="contact_active_checkbox_description">Use this contact for the quick tile</string>
+
+    <!-- DR17.5 W6 — AEAD-fail soft prompt banner (dr14 §6.4). Shown when consecutive
+         AEAD failures cross the threshold inside a 10-minute window. Tap dismisses
+         for 24h. -->
+    <string name="aead_soft_prompt_banner">Messages can\'t be decrypted from %s. Tap here to reset the secure session.</string>
+    <string name="aead_soft_prompt_banner_multi">Some contacts have undecryptable messages. Tap here to review.</string>
+
+    <!-- DR17.5 W5 — Reset / re-pair affordances in contact detail. -->
+    <string name="reset_secure_session">Reset secure session</string>
+    <string name="reset_secure_session_description">Generates a fresh ratchet. The peer will see a reset notification.</string>
+    <string name="repair_contact_title">Identity key compromised? Re-pair</string>
+    <string name="repair_contact_description">Wipes all message history with this contact and re-scans a new QR.</string>
+    <string name="repair_warning">Re-pairing wipes all message history with this contact.</string>
+    <string name="reset_in_progress">Reset in progress — waiting for the peer to acknowledge.</string>
+    <string name="reset_initiated">Secure session reset — waiting for peer to acknowledge.</string>
+    <string name="reset_refused_budget">Too many recent resets. Try again later or re-pair.</string>
 </resources>

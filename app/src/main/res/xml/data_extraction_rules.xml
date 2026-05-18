@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cloud-backup and device-transfer exclusion list. Closes the "device-local
+  exfiltration via Auto Backup" threat row in plan/08-dr/00-overview.md §1.
+
+  Excluded surfaces:
+    - voicedrop.db (Room) and its -wal / -shm / -journal companions —
+      contains messages, contacts, and (post-DR3) wrapped ratchet state.
+    - voicedrop_keys SharedPreferences — wrapped key state mirrored to
+      app-private XML (the KeyStore-resident master keys are already
+      excluded by the OS).
+    - filesDir/messages/ — decrypted recipient-side audio mirror.
+
+  noBackupFilesDir is excluded by Android by default; not re-listed here.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="database" path="voicedrop.db"/>
+        <exclude domain="database" path="voicedrop.db-wal"/>
+        <exclude domain="database" path="voicedrop.db-shm"/>
+        <exclude domain="database" path="voicedrop.db-journal"/>
+        <exclude domain="sharedpref" path="voicedrop_keys.xml"/>
+        <exclude domain="file" path="messages/"/>
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" path="voicedrop.db"/>
+        <exclude domain="database" path="voicedrop.db-wal"/>
+        <exclude domain="database" path="voicedrop.db-shm"/>
+        <exclude domain="database" path="voicedrop.db-journal"/>
+        <exclude domain="sharedpref" path="voicedrop_keys.xml"/>
+        <exclude domain="file" path="messages/"/>
+    </device-transfer>
+</data-extraction-rules>

@@ -6,12 +6,13 @@ import android.content.Intent
 import android.widget.Toast
 import com.voicedrop.R
 import com.voicedrop.audio.VoiceMessageShare
+import com.voicedrop.crypto.Bootstrap
+import com.voicedrop.crypto.KeyManager
+import com.voicedrop.crypto.MessagePayload
+import com.voicedrop.crypto.RatchetEncryptAndSend
 import com.voicedrop.service.VoiceDropService
 import com.voicedrop.storage.AppDatabase
-import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.MessageRepository
-import com.voicedrop.storage.PendingActionEntity
-import com.voicedrop.crypto.MessageCrypto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -42,22 +43,15 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 scope.launch {
                     val message = repository.getMessage(uuid) ?: return@launch
 
-                    message.encryptedFilePath?.let { path ->
-                        secureDelete(File(path))
-                    }
+                    // Local DELETE — wipe the audio file + soft-delete the row.
+                    // Sender-side handling is unchanged from v1 per dr17.5 — only the
+                    // outbound wire encoding changes.
+                    message.encryptedFilePath?.let { path -> secureDelete(File(path)) }
                     repository.markDeleted(uuid)
                     notificationHelper.cancelNotification(uuid.hashCode())
 
                     val targetUuidObj = runCatching { UUID.fromString(uuid) }.getOrNull() ?: return@launch
-                    val deletePayload = MessageCrypto.buildDeletePayload(targetUuidObj)
-                    repository.insertPendingAction(
-                        PendingActionEntity(
-                            contactId = message.contactId,
-                            type = PendingActionEntity.TYPE_SEND_DELETE,
-                            payload = deletePayload,
-                            createdAt = System.currentTimeMillis()
-                        )
-                    )
+                    sendRemoteDelete(context, db, message.contactId, targetUuidObj)
                 }
             }
 
@@ -88,6 +82,39 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 }
             }
         }
+    }
+
+    /**
+     * DR17.5 W7 — wire shape changed but the protocol stays: a DELETE on the local
+     * side ALSO sends a DELETE-kind inner plaintext through the ratchet so the peer
+     * deletes their copy. Transmits no-op'd here — the row lands in the v2 outbox
+     * and the running service's `PendingOutboxReplay` picks it up. We send an
+     * ACTION_FLUSH_OUTBOX intent to nudge that immediately.
+     */
+    private suspend fun sendRemoteDelete(
+        context: Context,
+        db: AppDatabase,
+        contactId: String,
+        targetUuid: UUID
+    ) {
+        val keyManager = KeyManager(context)
+        val ownFp32 = Bootstrap.fingerprintBytes(keyManager.getPublicKeyBytes())
+        val sender = RatchetEncryptAndSend(
+            db = db,
+            wrapMac = keyManager,
+            ownFingerprint32 = ownFp32,
+            transmit = { _, _ -> /* deferred to outbox replay */ }
+        )
+        try {
+            sender.encryptAndSend(contactId, MessagePayload.encodeDelete(targetUuid)) { _, _, _ -> null }
+        } catch (t: Throwable) {
+            android.util.Log.w(
+                "VoiceDrop/NotifAction",
+                "remote DELETE failed for ${contactId.take(8)} target=${targetUuid.toString().take(8)}: ${t.message}"
+            )
+            return
+        }
+        context.startForegroundService(VoiceDropService.flushOutboxIntent(context))
     }
 
     private fun secureDelete(file: File) {

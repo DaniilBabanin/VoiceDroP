@@ -30,4 +30,12 @@
         android:layout_marginTop="16dp"
         android:text="@string/share_contact_card"/>
 
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="20dp"
+        android:gravity="center"
+        android:text="@string/qr_pair_helper_text"
+        android:textAppearance="?attr/textAppearanceBody2"/>
+
 </LinearLayout>

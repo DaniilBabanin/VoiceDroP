@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v[1-9]*.*.*'   # Production releases only (v1.x.x and above); v0.x.x handled by prerelease.yml
+      - 'v[1-9]*.*.*'   # All v1+ tags; -pre.N suffix flips to GitHub pre-release
 
 permissions:
   contents: write
@@ -34,8 +34,23 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Run unit tests
-        run: ./gradlew testReleaseUnitTest --stacktrace
+      # DR19 §12.5 — no -keep rule may expose com.voicedrop.crypto.** to
+      # reflection. The ratchet, KeyManager, and RatchetState are only ever
+      # touched from Kotlin call sites. A reflection allowance would silently
+      # widen the attack surface; this grep fails the build before that ships.
+      - name: Lint proguard rules for crypto reflection allowances
+        run: |
+          set -euo pipefail
+          OFFENDERS=$(grep -nE 'com\.voicedrop\.crypto' app/proguard-rules.pro || true)
+          if [ -n "$OFFENDERS" ]; then
+            echo "::error::proguard-rules.pro must not -keep com.voicedrop.crypto.** (DR19 §12.5)"
+            echo "$OFFENDERS"
+            exit 1
+          fi
+          echo "proguard crypto reflection check OK"
+
+      - name: Run unit tests + ratchet lint
+        run: ./gradlew testReleaseUnitTest :app:ratchetLint --stacktrace
 
       - name: Build release APK
         run: |
@@ -46,6 +61,34 @@ jobs:
             -Pandroid.injected.signing.key.password="voicedrop" \
             --stacktrace
 
+      # DR19 §12.2 — assert the signed APK's certificate fingerprint matches
+      # the value pinned in tools/release/expected-signing-cert.sha256. Any
+      # keystore swap (accidental or otherwise) fails the release here.
+      - name: Verify APK signing-cert fingerprint
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          APK="app/build/outputs/apk/release/app-release.apk"
+          EXPECTED="$(tr -d '[:space:]' < tools/release/expected-signing-cert.sha256)"
+          if [ -z "$EXPECTED" ]; then
+            echo "::error::tools/release/expected-signing-cert.sha256 is empty"
+            exit 1
+          fi
+          ACTUAL="$("$BUILD_TOOLS/apksigner" verify --print-certs "$APK" \
+            | awk -F': ' '/Signer #1 certificate SHA-256 digest/ {print tolower($2); exit}')"
+          if [ -z "$ACTUAL" ]; then
+            echo "::error::could not extract signer cert SHA-256 from $APK"
+            "$BUILD_TOOLS/apksigner" verify --print-certs "$APK" || true
+            exit 1
+          fi
+          echo "expected: $EXPECTED"
+          echo "actual:   $ACTUAL"
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::APK signing-cert SHA-256 mismatch - refusing to publish"
+            exit 1
+          fi
+          echo "signing-cert fingerprint OK"
+
       - name: Build release AAB
         run: |
           ./gradlew bundleRelease \
@@ -54,6 +97,27 @@ jobs:
             -Pandroid.injected.signing.key.alias="voicedrop" \
             -Pandroid.injected.signing.key.password="voicedrop" \
             --stacktrace
+
+      # DR19 §12.3 (interim) — emit dex SHA-256 witnesses for the signed APK.
+      # Full reproducible-build enforcement is deferred (see
+      # tools/release/DR19-FOLLOWUPS.md §12.3); until then these hashes let an
+      # external rebuilder verify the compiled bytecode matches the published
+      # artifact without trusting the signature.
+      - name: Emit dex SHA-256 witnesses
+        id: dex_witness
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          mkdir -p /tmp/apk-witness
+          (cd /tmp/apk-witness && unzip -qq -o "$GITHUB_WORKSPACE/$APK" 'classes*.dex')
+          DEX_HASHES=$(cd /tmp/apk-witness && sha256sum classes*.dex | sort)
+          echo "Dex witnesses for $GITHUB_REF_NAME:"
+          echo "$DEX_HASHES"
+          {
+            echo "dex_witness<<EOF_DEX"
+            echo "$DEX_HASHES"
+            echo "EOF_DEX"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Extract version name
         id: version
@@ -69,6 +133,21 @@ jobs:
             app/build/outputs/apk/release/app-release.apk
             app/build/outputs/bundle/release/app-release.aab
           generate_release_notes: true
+          append_body: true
+          body: |
+            ### Build integrity (DR19 §12.3)
+
+            Signing-cert SHA-256 (pinned in `tools/release/expected-signing-cert.sha256`):
+
+            ```
+            178eda83348f801bfc6a1e231758002936f9e71b2148a7210d25d98512db175f
+            ```
+
+            APK `classes*.dex` SHA-256 witnesses for an independent rebuild check:
+
+            ```
+            ${{ steps.dex_witness.outputs.dex_witness }}
+            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

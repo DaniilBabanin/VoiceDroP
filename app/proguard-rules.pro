@@ -82,8 +82,11 @@
     public static final android.os.Parcelable$Creator CREATOR;
 }
 
-# Remove logging in release
+# Production log level: warnings and errors only. Strips verbose, debug,
+# and info — info logs in this app trace connection/pairing flow and would
+# leak metadata in field-captured logcat.
 -assumenosideeffects class android.util.Log {
-    public static *** d(...);
     public static *** v(...);
+    public static *** d(...);
+    public static *** i(...);
 }

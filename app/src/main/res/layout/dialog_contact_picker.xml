@@ -16,7 +16,7 @@
         android:id="@+id/contact_list"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:divider="?attr/dividerColor"
+        android:divider="?android:attr/listDivider"
         android:dividerHeight="1dp"/>
 
 </LinearLayout>

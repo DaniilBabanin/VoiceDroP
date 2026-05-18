@@ -35,7 +35,6 @@ class ActiveContactsPrefsTest {
             id = id,
             name = "name-$id",
             publicKeyBase64 = "pk",
-            sharedSecretWrapped = ByteArray(0),
             addedAt = addedAt
         )
 

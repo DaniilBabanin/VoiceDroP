@@ -7,4 +7,14 @@
         android:title="@string/auto_delete"
         app:showAsAction="never"/>
 
+    <item
+        android:id="@+id/action_reset_session"
+        android:title="@string/reset_secure_session"
+        app:showAsAction="never"/>
+
+    <item
+        android:id="@+id/action_repair"
+        android:title="@string/repair_contact_title"
+        app:showAsAction="never"/>
+
 </menu>

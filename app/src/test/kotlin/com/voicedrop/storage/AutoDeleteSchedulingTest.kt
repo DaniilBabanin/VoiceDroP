@@ -37,7 +37,6 @@ class AutoDeleteSchedulingTest {
         id = id,
         name = "Test $id",
         publicKeyBase64 = "dGVzdA==",
-        sharedSecretWrapped = ByteArray(0),
         addedAt = 0L,
         autoDeleteAfterMs = autoDeleteAfterMs
     )

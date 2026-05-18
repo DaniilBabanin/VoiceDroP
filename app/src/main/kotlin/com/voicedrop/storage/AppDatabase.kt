@@ -6,12 +6,23 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
-import androidx.room.migration.Migration
-import androidx.sqlite.db.SupportSQLiteDatabase
 
+/**
+ * Schema v3 — Double Ratchet (plan/08-dr/dr3-db-schema-v3.md).
+ *
+ * Hard cutover from v1.x: no migration code path. `fallbackToDestructiveMigration` drops everything
+ * on first v1.2 launch. The "Pair again" UX is wired up via [RepairNamesStash], which copies contact
+ * display names out of the old DB file *before* Room takes ownership.
+ */
 @Database(
-    entities = [ContactEntity::class, MessageEntity::class, PendingActionEntity::class],
-    version = 2,
+    entities = [
+        ContactEntity::class,
+        MessageEntity::class,
+        PendingActionEntity::class,
+        SkippedMessageKeyEntity::class,
+        PendingOutboundFrameEntity::class
+    ],
+    version = 3,
     exportSchema = true
 )
 @TypeConverters(AppDatabase.Converters::class)
@@ -20,6 +31,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun contactDao(): ContactDao
     abstract fun messageDao(): MessageDao
     abstract fun pendingActionDao(): PendingActionDao
+    abstract fun pendingOutboundFrameDao(): PendingOutboundFrameDao
+    abstract fun skippedMessageKeyDao(): SkippedMessageKeyDao
 
     class Converters {
         @TypeConverter
@@ -39,19 +52,46 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var instance: AppDatabase? = null
 
-        private val MIGRATION_1_2 = object : Migration(1, 2) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE messages ADD COLUMN transport INTEGER NOT NULL DEFAULT 0")
-            }
-        }
-
         fun getInstance(context: Context): AppDatabase =
             instance ?: synchronized(this) {
-                instance ?: Room.databaseBuilder(
-                    context.applicationContext,
-                    AppDatabase::class.java,
-                    "voicedrop.db"
-                ).addMigrations(MIGRATION_1_2).build().also { instance = it }
+                instance ?: run {
+                    // MUST run before Room opens the file so we still see v1.x rows.
+                    RepairNamesStash.stashFromV1xIfPresent(context.applicationContext)
+                    Room.databaseBuilder(
+                        context.applicationContext,
+                        AppDatabase::class.java,
+                        "voicedrop.db"
+                    )
+                        .fallbackToDestructiveMigration(dropAllTables = true)
+                        .build()
+                        .also {
+                            instance = it
+                            startSkippedKeyExpirySweep(it)
+                        }
+                }
             }
+
+        /**
+         * DR9 — fire-and-forget 7-day expiry sweep on `skipped_message_keys`. Runs
+         * on a daemon thread so `getInstance` never blocks UI startup. Failures are
+         * swallowed (sweep is a forward-secrecy hygiene step — not load-bearing for
+         * boot; next launch will retry). One sweep per process, single Android
+         * process per [00-overview.md §4].
+         */
+        private fun startSkippedKeyExpirySweep(db: AppDatabase) {
+            Thread({
+                try {
+                    SkippedKeyMaintenance.sweepExpired(
+                        db.skippedMessageKeyDao(),
+                        System.currentTimeMillis()
+                    )
+                } catch (t: Throwable) {
+                    android.util.Log.w("AppDatabase", "skipped-key expiry sweep failed", t)
+                }
+            }, "voicedrop-skipped-key-sweep").apply {
+                isDaemon = true
+                start()
+            }
+        }
     }
 }

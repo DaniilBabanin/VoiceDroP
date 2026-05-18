@@ -1,5 +1,6 @@
 package com.voicedrop.ui
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
@@ -10,9 +11,14 @@ import androidx.appcompat.app.AppCompatActivity
 import android.widget.Toast
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.google.crypto.tink.subtle.X25519
 import com.voicedrop.R
 import com.voicedrop.audio.VoiceMessageShare
+import com.voicedrop.crypto.Bootstrap
+import com.voicedrop.crypto.KeyManager
+import com.voicedrop.crypto.ResetReceive
 import com.voicedrop.service.ServiceState
+import com.voicedrop.service.VoiceDropService
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.MessageRepository
 import kotlinx.coroutines.CoroutineScope
@@ -21,6 +27,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MessageHistoryActivity : AppCompatActivity() {
 
@@ -94,11 +101,87 @@ class MessageHistoryActivity : AppCompatActivity() {
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        if (item.itemId == R.id.action_auto_delete) {
-            showAutoDeletePicker()
-            return true
+        return when (item.itemId) {
+            R.id.action_auto_delete -> { showAutoDeletePicker(); true }
+            R.id.action_reset_session -> { showResetSessionConfirm(); true }
+            R.id.action_repair -> { showRepairConfirm(); true }
+            else -> super.onOptionsItemSelected(item)
         }
-        return super.onOptionsItemSelected(item)
+    }
+
+    /**
+     * DR17.5 W5 — "Reset secure session" affordance. Atomically wipes the ratchet
+     * and enqueues an outbound RESET; [ResetRetransmitJob] (running in the service)
+     * resumes the retransmit schedule via the connectivity callback / next replay.
+     */
+    private fun showResetSessionConfirm() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.reset_secure_session)
+            .setMessage(R.string.reset_secure_session_description)
+            .setPositiveButton(R.string.reset_secure_session) { _, _ -> runManualReset() }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun runManualReset() {
+        scope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                val db = AppDatabase.getInstance(this@MessageHistoryActivity)
+                val keyManager = KeyManager(this@MessageHistoryActivity)
+                val ownFp32 = Bootstrap.fingerprintBytes(keyManager.getPublicKeyBytes())
+                val resetReceive = ResetReceive(
+                    db = db,
+                    wrapMac = keyManager,
+                    ownFingerprint32 = ownFp32,
+                    idSharedSecretFor = { id ->
+                        val c = repository.getContact(id)
+                            ?: error("contact $id not found")
+                        val peerPub = android.util.Base64.decode(
+                            c.publicKeyBase64, android.util.Base64.NO_WRAP
+                        )
+                        val priv = keyManager.getPrivateKeyBytes()
+                        try {
+                            X25519.computeSharedSecret(priv, peerPub)
+                        } finally {
+                            priv.fill(0)
+                        }
+                    }
+                )
+                resetReceive.manualResetInitiate(contactId)
+            }
+            val msg = when (outcome) {
+                ResetReceive.Outcome.InitiatedReset -> R.string.reset_initiated
+                ResetReceive.Outcome.InitiationRefusedBudget -> R.string.reset_refused_budget
+                else -> {
+                    Toast.makeText(this@MessageHistoryActivity,
+                        "Reset outcome: $outcome", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+            }
+            Toast.makeText(this@MessageHistoryActivity, msg, Toast.LENGTH_LONG).show()
+            // Kick the outbox to send the RESET frame immediately.
+            startForegroundService(VoiceDropService.flushOutboxIntent(this@MessageHistoryActivity))
+        }
+    }
+
+    /**
+     * DR17.5 W5 — "Identity key compromised? Re-pair" affordance. Per dr15 §6.5,
+     * re-pair wipes the contact's ratchet/outbox/skipped-key state before the new
+     * QR scan; the actual wipe is owned by [com.voicedrop.crypto.RePairWipe] and
+     * runs from QrPairActivity in re-pair mode.
+     */
+    private fun showRepairConfirm() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.repair_contact_title)
+            .setMessage(R.string.repair_warning)
+            .setPositiveButton(R.string.repair_contact_title) { _, _ ->
+                val intent = Intent(this, QrPairActivity::class.java).apply {
+                    putExtra(QrPairActivity.EXTRA_REPAIR_CONTACT_ID, contactId)
+                }
+                startActivity(intent)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
     }
 
     private fun showAutoDeletePicker() {

@@ -28,7 +28,11 @@ data class MessageEntity(
     val transcription: String?,
     val createdAt: Long,
     val sentAt: Long,
-    val deliveredAt: Long
+    val deliveredAt: Long,
+    // DR3: sender-side ratchet delivery state. Receiver rows skip this entirely (always 0).
+    // Transitions: 0 PENDING -> 1 DELIVERED on matching RECEIPT (dr11);
+    //              0 PENDING -> 2 GAVE_UP on outbox give-up. Terminal once non-zero.
+    val delivery_state: Int = DELIVERY_PENDING
 ) {
     companion object {
         const val DIRECTION_INBOUND = 0
@@ -41,5 +45,8 @@ data class MessageEntity(
         const val STATE_DELETED = 4
         const val STATE_UNDELIVERABLE = 5
 
+        const val DELIVERY_PENDING = 0
+        const val DELIVERY_DELIVERED = 1
+        const val DELIVERY_GAVE_UP = 2
     }
 }

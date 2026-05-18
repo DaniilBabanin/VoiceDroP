@@ -10,12 +10,22 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
+import com.google.crypto.tink.subtle.X25519
 import com.voicedrop.audio.AudioPlayer
 import com.voicedrop.audio.AudioRecorder
+import com.voicedrop.crypto.AutoResetTrigger
+import com.voicedrop.crypto.AwaitingFirstReceive
+import com.voicedrop.crypto.Bootstrap
 import com.voicedrop.crypto.KeyManager
-import com.voicedrop.crypto.MessageCrypto
-import com.voicedrop.crypto.ContactKey
+import com.voicedrop.crypto.MessagePayload
+import com.voicedrop.crypto.RatchetDecryptAndPersist
+import com.voicedrop.crypto.RatchetEncryptAndSend
+import com.voicedrop.crypto.ReceiptInboundHandler
+import com.voicedrop.crypto.ResetReceive
+import com.voicedrop.crypto.ResetRetransmitJob
 import com.voicedrop.network.ConnectionManager
+import com.voicedrop.network.IngestRateLimiter
+import com.voicedrop.network.PendingOutboxReplay
 import com.voicedrop.notification.NotificationHelper
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.MessageEntity
@@ -30,17 +40,29 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
-import java.util.UUID
+import java.io.IOException
 
 class VoiceDropService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var notificationHelper: NotificationHelper
     private lateinit var keyManager: KeyManager
+    private lateinit var db: AppDatabase
     private lateinit var repository: MessageRepository
-    private lateinit var connectionManager: ConnectionManager  // reassigned on reload
+    private lateinit var connectionManager: ConnectionManager
+
+    // DR17.5 W3 — long-lived ratchet components owned by the service so the
+    // ConnectionManager (which routes wire bytes) gets the same instances on
+    // both inbound and outbound paths. Reset retransmit job's coroutine scope
+    // is the service scope so it survives until the service stops.
+    private lateinit var ratchetSender: RatchetEncryptAndSend
+    private lateinit var pendingOutboxReplay: PendingOutboxReplay
+    private lateinit var resetRetransmitJob: ResetRetransmitJob
+    private lateinit var resetReceive: ResetReceive
+    private lateinit var ownFingerprint32: ByteArray
 
     private val audioRecorder = AudioRecorder()
     private val audioPlayer = AudioPlayer()
@@ -57,17 +79,110 @@ class VoiceDropService : Service() {
         notificationHelper = NotificationHelper(this)
         keyManager = KeyManager(this)
 
-        val db = AppDatabase.getInstance(this)
+        db = AppDatabase.getInstance(this)
         repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())
+
+        ownFingerprint32 = Bootstrap.fingerprintBytes(keyManager.getPublicKeyBytes())
+
+        // The transmit lambda dereferences `connectionManager` at call time, not
+        // capture time, so ACTION_RELOAD_CONFIG can swap the connection manager
+        // without breaking outbound paths.
+        val transmitForRatchet: suspend (String, ByteArray) -> Unit = { id, bytes ->
+            val transport = connectionManager.transmit(id, bytes)
+            if (transport == TransportType.UNKNOWN) {
+                // Active-backoff is already armed by transmit() and the outbox
+                // row is in place via the ratchet txn; raise so encryptAndSend's
+                // runCatching surfaces the miss for telemetry but does NOT roll
+                // back the persisted state.
+                throw IOException("transmit: no path for ${id.take(8)} — outbox replay owns retries")
+            }
+        }
+        val transmitForReplay: suspend (Int, String, ByteArray) -> Boolean = { _, id, bytes ->
+            connectionManager.transmit(id, bytes) != TransportType.UNKNOWN
+        }
+
+        ratchetSender = RatchetEncryptAndSend(
+            db = db,
+            wrapMac = keyManager,
+            ownFingerprint32 = ownFingerprint32,
+            transmit = transmitForRatchet
+        )
+        val ratchetReceiver = RatchetDecryptAndPersist(db, keyManager, ownFingerprint32)
+        val receiptInboundHandler = ReceiptInboundHandler(db)
+        resetReceive = ResetReceive(
+            db = db,
+            wrapMac = keyManager,
+            ownFingerprint32 = ownFingerprint32,
+            idSharedSecretFor = { contactId ->
+                val contact = repository.getContact(contactId)
+                    ?: error("idSharedSecretFor: contact $contactId not found")
+                val peerPub = android.util.Base64.decode(
+                    contact.publicKeyBase64, android.util.Base64.NO_WRAP
+                )
+                val priv = keyManager.getPrivateKeyBytes()
+                try {
+                    X25519.computeSharedSecret(priv, peerPub)
+                } finally {
+                    priv.fill(0)
+                }
+            }
+        )
+        pendingOutboxReplay = PendingOutboxReplay(
+            db = db,
+            wrapMac = keyManager,
+            transmit = transmitForReplay
+        )
+        resetRetransmitJob = ResetRetransmitJob(
+            db = db,
+            replay = pendingOutboxReplay,
+            scope = scope
+        )
+        val autoResetTrigger = AutoResetTrigger(db, resetReceive)
+        val ingestRateLimiter = IngestRateLimiter()
 
         val prefs = getSharedPreferences("voicedrop_settings", Context.MODE_PRIVATE)
         val workerUrl = prefs.getString("signaling_url", "") ?: ""
         val relayFallback = prefs.getBoolean(PREF_RELAY_FALLBACK_ENABLED, true)
-        connectionManager = ConnectionManager(this, repository, keyManager, workerUrl, relayFallback)
+        connectionManager = ConnectionManager(
+            context = this,
+            repository = repository,
+            keyManager = keyManager,
+            workerUrl = workerUrl,
+            db = db,
+            ratchetReceiver = ratchetReceiver,
+            receiptInboundHandler = receiptInboundHandler,
+            resetReceive = resetReceive,
+            autoResetTrigger = autoResetTrigger,
+            ingestRateLimiter = ingestRateLimiter,
+            pendingOutboxReplay = pendingOutboxReplay,
+            resetRetransmitJob = resetRetransmitJob,
+            relayFallbackEnabled = relayFallback
+        )
         connectionManager.start()
 
         // Stay alive as a foreground service so the TCP listener is always up for incoming messages
         startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
+
+        // DR17.5 W3 startup hooks — replay any outbox accumulated while the
+        // process was killed, and resume reset retransmit schedules for any
+        // contact whose previous init didn't get acked.
+        scope.launch {
+            try {
+                pendingOutboxReplay.replayAll()
+            } catch (t: Throwable) {
+                Log.w(TAG, "startup outbox replay failed", t)
+            }
+            try {
+                for (contact in repository.getAllContacts().first()) {
+                    if (contact.expecting_ack != 0) {
+                        Log.i(TAG, "startup: resuming reset retransmit for ${contact.id.take(8)}")
+                        resetRetransmitJob.start(contact.id)
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "startup reset-retransmit resume failed", t)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -77,8 +192,38 @@ class VoiceDropService : Service() {
                 val prefs = getSharedPreferences("voicedrop_settings", Context.MODE_PRIVATE)
                 val newUrl = prefs.getString("signaling_url", "") ?: ""
                 val relayFallback = prefs.getBoolean(PREF_RELAY_FALLBACK_ENABLED, true)
-                connectionManager = ConnectionManager(this, repository, keyManager, newUrl, relayFallback)
+                val ratchetReceiver = RatchetDecryptAndPersist(db, keyManager, ownFingerprint32)
+                val receiptInboundHandler = ReceiptInboundHandler(db)
+                val autoResetTrigger = AutoResetTrigger(db, resetReceive)
+                val ingestRateLimiter = IngestRateLimiter()
+                connectionManager = ConnectionManager(
+                    context = this,
+                    repository = repository,
+                    keyManager = keyManager,
+                    workerUrl = newUrl,
+                    db = db,
+                    ratchetReceiver = ratchetReceiver,
+                    receiptInboundHandler = receiptInboundHandler,
+                    resetReceive = resetReceive,
+                    autoResetTrigger = autoResetTrigger,
+                    ingestRateLimiter = ingestRateLimiter,
+                    pendingOutboxReplay = pendingOutboxReplay,
+                    resetRetransmitJob = resetRetransmitJob,
+                    relayFallbackEnabled = relayFallback
+                )
                 connectionManager.start()
+            }
+            ACTION_FLUSH_OUTBOX -> {
+                // Triggered from QrPairActivity after pairing (auto-HELLO outbox row)
+                // and from any UI that wants an immediate replay without waiting for
+                // NetworkCallback.onAvailable.
+                scope.launch {
+                    try {
+                        pendingOutboxReplay.replayAll()
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "ACTION_FLUSH_OUTBOX: replay failed", t)
+                    }
+                }
             }
             ACTION_RECORD_START -> {
                 val contactId = intent.getStringExtra(EXTRA_CONTACT_ID) ?: return START_STICKY
@@ -120,7 +265,6 @@ class VoiceDropService : Service() {
 
             try {
                 audioRecorder.start()
-                // Launch the capture loop; await it in stopRecording() to get the opus bytes
                 recordingJob = scope.async { audioRecorder.recordLoop { } }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start recording", e)
@@ -142,67 +286,57 @@ class VoiceDropService : Service() {
             notificationHelper.updateRecordingNotification(NOTIFICATION_ID_RECORDING, "Sending…")
 
             try {
-                // Signal the record loop to finish and collect the encoded audio
                 audioRecorder.stopRecording()
                 val opusBytes = recordingJob?.await() ?: ByteArray(0)
                 recordingJob = null
                 val durationMs = (System.currentTimeMillis() - recordStartTime).toInt()
 
                 val contact = repository.getContact(contactId) ?: return@launch
-                val sessionKey = ContactKey.deriveSessionKey(
-                    keyManager.getPrivateKeyBytes(),
-                    android.util.Base64.decode(contact.publicKeyBase64, android.util.Base64.NO_WRAP)
-                )
-
                 val deleteAfterMs = contact.autoDeleteAfterMs
-                val payload = MessageCrypto.buildVoicePayload(durationMs, deleteAfterMs, opusBytes)
-
-                val senderFpHex = keyManager.getFingerprint()
-                val senderFpBytes = senderFpHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-                val recipFpBytes = contactId.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-                val uuid = UUID.randomUUID()
-
-                val wireFrame = MessageCrypto.buildFrame(
-                    senderFpBytes, recipFpBytes, uuid, sessionKey, payload
-                )
-
-                val encryptedBytes = MessageCrypto.encrypt(sessionKey, opusBytes)
-                val messagesDir = File(filesDir, "messages")
-                messagesDir.mkdirs()
-                val encFile = File(messagesDir, "${uuid}.enc")
-                encFile.writeBytes(encryptedBytes)
+                val payload = MessagePayload.encodeVoice(durationMs, deleteAfterMs, opusBytes)
 
                 acquireWakeLock()
 
-                repository.insertMessage(
+                val sent = ratchetSender.encryptAndSend(contactId, payload) { _, frameUuidBytes, now ->
+                    val uuidStr = uuidBytesToUuidString(frameUuidBytes)
+                    val messagesDir = File(filesDir, "messages").apply { mkdirs() }
+                    val opusFile = File(messagesDir, "$uuidStr.opus")
+                    // DR17.5 decision 2b — plaintext audio at rest.
+                    opusFile.writeBytes(opusBytes)
                     MessageEntity(
-                        uuid = uuid.toString(),
+                        uuid = uuidStr,
                         contactId = contactId,
                         direction = MessageEntity.DIRECTION_OUTBOUND,
-                        state = MessageEntity.STATE_OUTBOX,
+                        state = MessageEntity.STATE_SENT,
                         transport = TransportType.UNKNOWN,
-                        encryptedFilePath = encFile.absolutePath,
+                        encryptedFilePath = opusFile.absolutePath,
                         durationMs = durationMs,
                         deleteAfterMs = deleteAfterMs,
                         scheduledDeleteAt = 0L,
                         transcription = null,
-                        createdAt = System.currentTimeMillis(),
-                        sentAt = 0L,
-                        deliveredAt = 0L
+                        createdAt = now,
+                        sentAt = now,
+                        deliveredAt = 0L,
+                        delivery_state = MessageEntity.DELIVERY_PENDING
                     )
-                )
-
-                val transport = connectionManager.sendToContact(contactId, wireFrame)
-                repository.updateMessageStateSent(uuid.toString(), MessageEntity.STATE_SENT, System.currentTimeMillis())
-                if (transport != TransportType.UNKNOWN) {
-                    repository.updateTransport(uuid.toString(), transport)
                 }
-
+                Log.i(TAG, "sent voice memo ${sent.frameUuidHex.take(8)} (${durationMs}ms) to ${contactId.take(8)}")
+            } catch (e: AwaitingFirstReceive) {
+                // DR17.5 §"Bob's can't-send-first UX" — fall-through toast for the edge
+                // case where the user managed to record on a contact whose ratchet hasn't
+                // yet learned `dhr_pub` (Alice's HELLO is still in flight).
+                Log.w(TAG, "send blocked — awaiting first receive: ${e.message}")
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    android.widget.Toast.makeText(
+                        this@VoiceDropService,
+                        "Setting up secure channel — try again in a moment",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send message", e)
             } finally {
                 releaseWakeLock()
-                // Return to idle foreground state — keep service alive for incoming messages
                 startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
                 ServiceState.updateState(ServiceState.State.IDLE, null)
                 VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
@@ -217,16 +351,10 @@ class VoiceDropService : Service() {
             val notifId = uuid.hashCode()
             try {
                 val message = repository.getMessage(uuid) ?: return@launch
-                val contactId = message.contactId
-                val contact = repository.getContact(contactId) ?: return@launch
-                val sessionKey = ContactKey.deriveSessionKey(
-                    keyManager.getPrivateKeyBytes(),
-                    android.util.Base64.decode(contact.publicKeyBase64, android.util.Base64.NO_WRAP)
-                )
-
-                val encFile = message.encryptedFilePath?.let { File(it) } ?: return@launch
-                val encrypted = encFile.readBytes()
-                val opusBytes = MessageCrypto.decrypt(sessionKey, encrypted)
+                val opusFile = message.encryptedFilePath?.let { File(it) } ?: return@launch
+                if (!opusFile.exists()) return@launch
+                // DR17.5: opus bytes are plaintext at rest (decision 2b); read directly.
+                val opusBytes = opusFile.readBytes()
 
                 notificationHelper.updatePlaybackProgress(notifId, 0, message.durationMs)
 
@@ -266,6 +394,7 @@ class VoiceDropService : Service() {
 
     override fun onDestroy() {
         connectionManager.stop()
+        resetRetransmitJob.cancelAll()
         scope.cancel()
         releaseWakeLock()
         super.onDestroy()
@@ -312,6 +441,8 @@ class VoiceDropService : Service() {
         const val ACTION_PLAY = "com.voicedrop.ACTION_PLAY"
         const val ACTION_STOP_PLAY = "com.voicedrop.ACTION_STOP_PLAY"
         const val ACTION_RELOAD_CONFIG = "com.voicedrop.ACTION_RELOAD_CONFIG"
+        /** DR17.5 W3 — UI hook for "kick the outbox now" (e.g. after pairing auto-HELLO). */
+        const val ACTION_FLUSH_OUTBOX = "com.voicedrop.ACTION_FLUSH_OUTBOX"
         const val EXTRA_CONTACT_ID = "contact_id"
         const val EXTRA_UUID = "uuid"
         const val NOTIFICATION_ID_IDLE = 1000
@@ -339,5 +470,17 @@ class VoiceDropService : Service() {
             Intent(context, VoiceDropService::class.java).apply {
                 action = ACTION_STOP_PLAY
             }
+
+        fun flushOutboxIntent(context: Context) =
+            Intent(context, VoiceDropService::class.java).apply {
+                action = ACTION_FLUSH_OUTBOX
+            }
+
+        /** 16-byte UUID bytes → standard dashed UUID string. */
+        private fun uuidBytesToUuidString(bytes: ByteArray): String {
+            require(bytes.size == 16) { "uuid bytes must be 16" }
+            val bb = java.nio.ByteBuffer.wrap(bytes)
+            return java.util.UUID(bb.long, bb.long).toString()
+        }
     }
 }

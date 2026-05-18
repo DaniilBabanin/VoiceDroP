@@ -1,6 +1,6 @@
 # VoiceDrop
 
-Async, walkie-talkie-style voice messaging for Android. No accounts, no plaintext on the server, E2E encrypted (X25519 → HKDF → XChaCha20-Poly1305). Private keys stay in AndroidKeyStore.
+Async, walkie-talkie-style voice messaging for Android. No accounts, no plaintext on the server, E2E encrypted with a Signal-style Double Ratchet (X25519 bootstrap → per-message symmetric ratchet → ChaCha20-Poly1305) so each message has its own key and a stolen handset can't decrypt history. Private keys stay in AndroidKeyStore.
 
 Messages deliver over LAN (mDNS), STUN, Cloudflare Worker relay, or outbox queue. The worker handles signaling and relays encrypted blobs only; it never sees plaintext audio or decryption keys, and relayed blobs are deleted on recipient pickup.
 
@@ -39,6 +39,8 @@ Open VoiceDrop → menu → Settings. Set a display name, paste the signaling UR
 
 The emoji verification matters. Skip it and the pairing is MITM-able.
 
+**Reset / re-pair.** If a device gets restored from backup, swapped, or you suspect compromise, open the contact and pick "Reset secure session" (clears the ratchet state on both sides, keeps the contact and history) or "Re-pair" (wipes the contact's identity and starts over with a fresh QR scan). Both sides converge automatically; the second device just gets a banner explaining what happened.
+
 ---
 
 ## 5. Send a voice message
@@ -65,21 +67,25 @@ Message history: tap a contact. Delete contact: swipe left. Auto-delete timer (N
 
 Delivery: LAN mDNS, STUN hole-punch, Cloudflare Worker store-and-forward relay, outbox queue when offline. The worker sees ciphertext blobs and routing fingerprints — never plaintext audio, decryption keys, or display names; relayed blobs are deleted on recipient pickup.
 
-Crypto: X25519 ECDH → HKDF-SHA256 → XChaCha20-Poly1305. Storage: Room DB + encrypted blobs in `filesDir/messages/`.
+Crypto: X25519 bootstrap → Double Ratchet (HKDF-SHA256 root + chain keys, fresh DH ratchet on every receive) → ChaCha20-Poly1305 AEAD. Each message gets a unique key; compromise of the current state does not reveal past messages (forward secrecy) and a fresh DH from the peer recovers confidentiality going forward (post-compromise security). Wrapped ratchet state is bound to its `(table, row)` location via HMAC, and AndroidKeyStore holds the wrap key. Storage: Room DB + encrypted blobs in `filesDir/messages/`. Spec: [`plan/08-dr/`](plan/08-dr/).
 
 ---
 
 ## Building and releasing
 
-GitHub Actions builds on tags. Push a `v*` tag to trigger:
+GitHub Actions is the only build path; there is no supported local build. Push a `v1.MAJOR.MINOR.BUILD` tag to trigger `release.yml`:
 
 ```bash
-git tag v0.1.0.30 && git push origin v0.1.0.30
+# Pre-release (default for day-to-day work)
+git tag v1.2.0.12-pre.1 && git push origin v1.2.0.12-pre.1
+
+# Stable (explicit only — no -pre.N suffix)
+git tag v1.2.0.12 && git push origin v1.2.0.12
 ```
 
-`v0.*` tags go to `prerelease.yml` (debug APK). `v1.*` tags go to `release.yml` (signed APK), which needs 4 repo secrets: `KEYSTORE_BASE64`, `KEY_ALIAS`, `KEY_PASSWORD`, `STORE_PASSWORD`.
+Tag suffix `-pre.N` flips the GitHub release to pre-release; bare tags are stable. The 4-component `versionName` in `app/build.gradle.kts` must match the tag exactly; `versionCode` must increment with every push.
 
-To generate a keystore: `keytool -genkey -v -keystore release.keystore -alias voicedrop -keyalg RSA -keysize 2048 -validity 10000 -storetype PKCS12`. Base64-encode it, set as `KEYSTORE_BASE64`, then push a `v1.0.0` tag.
+The signing keystore (`app/release.keystore`, PKCS12) is committed; CI signs with hard-coded passwords. The release workflow asserts the signed APK's X.509 certificate SHA-256 matches the value pinned in [`tools/release/expected-signing-cert.sha256`](tools/release/expected-signing-cert.sha256) and refuses to publish on mismatch. Released APKs also include their `classes*.dex` SHA-256 in the release body so anyone can rebuild and compare bytes. Build-integrity scope and deferred follow-ups (dependency-hash pinning, Actions SHA-pinning, full reproducible-build) are tracked in [`tools/release/DR19-FOLLOWUPS.md`](tools/release/DR19-FOLLOWUPS.md).
 
 ---
 
@@ -88,4 +94,4 @@ To generate a keystore: `keytool -genkey -v -keystore release.keystore -alias vo
 - [PRIVACY.md](PRIVACY.md) — what data the app stores, what metadata third parties (Cloudflare, Google STUN) see, and the limits of deletion. Linked from in-app Settings.
 - [SECURITY.md](SECURITY.md) — threat model and vulnerability reporting.
 
-VoiceDrop uses strong cryptography (XChaCha20-Poly1305, X25519). Users are responsible for compliance with any import, export, or use restrictions that apply in their own jurisdiction.
+VoiceDrop uses strong cryptography (X25519, HKDF-SHA256, ChaCha20-Poly1305). Users are responsible for compliance with any import, export, or use restrictions that apply in their own jurisdiction.
