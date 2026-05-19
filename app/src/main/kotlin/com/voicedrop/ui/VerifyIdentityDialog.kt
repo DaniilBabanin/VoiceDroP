@@ -12,7 +12,6 @@ import com.voicedrop.storage.ContactDao
 import com.voicedrop.storage.isVerifiedAgainst
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -20,16 +19,21 @@ import kotlinx.coroutines.withContext
  * §3.1 — Identity-verification dialog. Single-sided: tapping "Mark as verified"
  * writes `verified_at` for this device only. No frame is sent; verification is
  * meaningful only via an out-of-band channel between humans.
+ *
+ * The caller MUST pass a `scope` tied to its own lifecycle (e.g. the activity's
+ * `scope` field cancelled in `onDestroy`). The dialog launches DB I/O and UI
+ * refresh coroutines off this scope; on activity destruction, the scope's cancel
+ * propagates and the in-flight `dialog.getButton(...)` calls never fire on a
+ * destroyed window.
  */
 class VerifyIdentityDialog(
     private val context: Context,
     private val contactId: String,
     private val myIdPub: ByteArray,
     private val theirIdPub: ByteArray,
+    private val scope: CoroutineScope,
     private val contactDao: ContactDao =
         AppDatabase.getInstance(context).contactDao(),
-    private val scope: CoroutineScope =
-        CoroutineScope(SupervisorJob() + Dispatchers.Main),
 ) {
 
     fun show() {

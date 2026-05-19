@@ -154,6 +154,7 @@ class MessageHistoryActivity : AppCompatActivity() {
                 contactId = contactId,
                 myIdPub = myIdPub,
                 theirIdPub = theirIdPub,
+                scope = scope,
             ).show()
         }
     }
