@@ -75,6 +75,18 @@ class MessageHistoryActivity : AppCompatActivity() {
         repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())
 
         scope.launch {
+            val contact = repository.getContact(contactId) ?: return@launch
+            val theirIdPub = android.util.Base64.decode(
+                contact.publicKeyBase64, android.util.Base64.NO_WRAP
+            )
+            val myIdPub = withContext(Dispatchers.IO) {
+                KeyManager(this@MessageHistoryActivity).getPublicKeyBytes()
+            }
+            supportActionBar?.subtitle =
+                com.voicedrop.crypto.Sas.codeFor(myIdPub, theirIdPub).joinToString(" ")
+        }
+
+        scope.launch {
             repository.getMessages(contactId).collectLatest { messages ->
                 if (messages.isEmpty()) {
                     emptyState.visibility = View.VISIBLE
@@ -103,6 +115,7 @@ class MessageHistoryActivity : AppCompatActivity() {
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
             R.id.action_auto_delete -> { showAutoDeletePicker(); true }
+            R.id.action_verify_identity -> { showVerifyIdentity(); true }
             R.id.action_reset_session -> { showResetSessionConfirm(); true }
             R.id.action_repair -> { showRepairConfirm(); true }
             else -> super.onOptionsItemSelected(item)
@@ -121,6 +134,28 @@ class MessageHistoryActivity : AppCompatActivity() {
             .setPositiveButton(R.string.reset_secure_session) { _, _ -> runManualReset() }
             .setNegativeButton(R.string.cancel, null)
             .show()
+    }
+
+    /**
+     * §3.1 — opens the in-chat identity-verification panel. Single-sided: tapping
+     * "Mark as verified" writes `verified_at` for this device only. No frame is sent.
+     */
+    private fun showVerifyIdentity() {
+        scope.launch {
+            val contact = repository.getContact(contactId) ?: return@launch
+            val theirIdPub = android.util.Base64.decode(
+                contact.publicKeyBase64, android.util.Base64.NO_WRAP
+            )
+            val myIdPub = withContext(Dispatchers.IO) {
+                KeyManager(this@MessageHistoryActivity).getPublicKeyBytes()
+            }
+            VerifyIdentityDialog(
+                context = this@MessageHistoryActivity,
+                contactId = contactId,
+                myIdPub = myIdPub,
+                theirIdPub = theirIdPub,
+            ).show()
+        }
     }
 
     private fun runManualReset() {
