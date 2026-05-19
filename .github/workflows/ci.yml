@@ -2,37 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ develop ]
   pull_request:
     branches: [ main ]
 
 jobs:
-  check:
-    name: Check tag
-    runs-on: ubuntu-latest
-    outputs:
-      is_tagged: ${{ steps.check.outputs.is_tagged }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-tags: true
-
-      - name: Check if commit is tagged
-        id: check
-        run: |
-          tags=$(git tag --points-at HEAD)
-          if [ -n "$tags" ]; then
-            echo "Commit has tags: $tags — release.yml handles tagged builds. Skipping debug build."
-            echo "is_tagged=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_tagged=false" >> "$GITHUB_OUTPUT"
-          fi
-
   build:
     name: Build APK
-    needs: check
-    if: needs.check.outputs.is_tagged != 'true'
     runs-on: ubuntu-latest
 
     steps:
