@@ -20,9 +20,9 @@ object PairingVerificationEmojiMap {
         "🚤","🛥","🛳","⛴","🚢","🗺","🏔","⛰","🌋","🗻","🏕","🏖","🏜","🏝","🏞","🏟"
     )
 
-    fun getEmojisForBytes(bytes: ByteArray): List<String> {
-        require(bytes.size >= 4) { "Need at least 4 bytes" }
-        return bytes.take(4).map { b ->
+    fun getEmojisForBytes(bytes: ByteArray, count: Int = 4): List<String> {
+        require(bytes.size >= count) { "Need at least $count bytes" }
+        return bytes.take(count).map { b ->
             EMOJI_PALETTE[b.toInt() and 0xFF]
         }
     }
