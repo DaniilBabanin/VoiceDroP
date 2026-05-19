@@ -51,9 +51,9 @@ class PairingFlowTest {
     @Test
     fun sasCodeIsSymmetricAndSixEmojisIdentityKeyed() {
         // §3.1 — SAS is keyed off identity public keys, not RK_0. Both sides arrive at
-        // identical emojis regardless of role and regardless of the ratchet state. The
-        // bootstrap still happens (to mirror the real flow), but RK_0 is no longer fed
-        // into the derivation.
+        // identical emojis regardless of role and regardless of the ratchet state.
+        // Pure-derivation test — no bootstrap call needed; SasTest covers the full
+        // property matrix, this guards the integration shape.
         val alicePub = aliceKeyManager.getPublicKeyBytes()
         val bobPriv = X25519.generatePrivateKey()
         val bobPub = X25519.publicFromPrivate(bobPriv)

@@ -321,7 +321,6 @@ class QrPairActivity : AppCompatActivity() {
 
                 val theirPublicKeyBytes = android.util.Base64.decode(card.pk, android.util.Base64.NO_WRAP)
                 val theirFingerprint = ContactKey.fingerprint(theirPublicKeyBytes)
-                val myFingerprint = keyManager.getFingerprint()
 
                 // DR17.6 — re-pair peer-identity gate. Moved from confirmPairing so the
                 // user finds out about a wrong-peer scan immediately, with no wasted
