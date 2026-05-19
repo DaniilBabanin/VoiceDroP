@@ -1,6 +1,5 @@
 package com.voicedrop.crypto
 
-import com.voicedrop.ui.PairingVerificationEmojiMap
 import java.security.MessageDigest
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -31,7 +30,7 @@ object Sas {
             init(SecretKeySpec(DOMAIN_TAG, "HmacSHA256"))
         }
         val out = mac.doFinal((lo + hi).toByteArray(Charsets.UTF_8))
-        return PairingVerificationEmojiMap.getEmojisForBytes(out, CODE_LENGTH)
+        return SasEmojiPalette.getEmojisForBytes(out, CODE_LENGTH)
     }
 
     /**

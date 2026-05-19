@@ -480,6 +480,8 @@ class QrPairActivity : AppCompatActivity() {
         // implementation used to inline `wrapAndMac("rk", …)` / `wrapAndMac("dhs_priv", …)`
         // here while persistence read with `"contacts.rk_wrapped"` / `"contacts.dhs_priv_wrapped"`
         // — every first send then failed with WrapHmacMismatch on the load.
+        // §3.1 — pair-time Match is the canonical first verification. Sibling write site:
+        // MessageHistoryActivity's "Mark as verified" panel updates the same columns later.
         val myIdPub = keyManager.getPublicKeyBytes()
         val theirIdPub = android.util.Base64.decode(card.pk, android.util.Base64.NO_WRAP)
         val now = System.currentTimeMillis()

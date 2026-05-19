@@ -36,6 +36,12 @@ class MessageHistoryActivity : AppCompatActivity() {
     private lateinit var repository: MessageRepository
     private lateinit var contactId: String
 
+    // §3.1 — cache the local identity public key after the first KeyManager read.
+    // Read by both the subtitle render and the in-chat Verify panel; cached because
+    // KeyManager.getPublicKeyBytes hits SharedPreferences. Only mutated from `scope`,
+    // which is Main-confined, so no synchronisation required.
+    private var cachedMyIdPub: ByteArray? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_message_history)
@@ -75,13 +81,7 @@ class MessageHistoryActivity : AppCompatActivity() {
         repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())
 
         scope.launch {
-            val contact = repository.getContact(contactId) ?: return@launch
-            val theirIdPub = android.util.Base64.decode(
-                contact.publicKeyBase64, android.util.Base64.NO_WRAP
-            )
-            val myIdPub = withContext(Dispatchers.IO) {
-                KeyManager(this@MessageHistoryActivity).getPublicKeyBytes()
-            }
+            val (myIdPub, theirIdPub) = loadKeyPair() ?: return@launch
             supportActionBar?.subtitle =
                 com.voicedrop.crypto.Sas.codeFor(myIdPub, theirIdPub).joinToString(" ")
         }
@@ -139,16 +139,12 @@ class MessageHistoryActivity : AppCompatActivity() {
     /**
      * §3.1 — opens the in-chat identity-verification panel. Single-sided: tapping
      * "Mark as verified" writes `verified_at` for this device only. No frame is sent.
+     * Sibling write site: `QrPairActivity.confirmPairing` writes verified_at at
+     * pair-time when the user taps Match. Both writes are local; no peer round-trip.
      */
     private fun showVerifyIdentity() {
         scope.launch {
-            val contact = repository.getContact(contactId) ?: return@launch
-            val theirIdPub = android.util.Base64.decode(
-                contact.publicKeyBase64, android.util.Base64.NO_WRAP
-            )
-            val myIdPub = withContext(Dispatchers.IO) {
-                KeyManager(this@MessageHistoryActivity).getPublicKeyBytes()
-            }
+            val (myIdPub, theirIdPub) = loadKeyPair() ?: return@launch
             VerifyIdentityDialog(
                 context = this@MessageHistoryActivity,
                 contactId = contactId,
@@ -157,6 +153,23 @@ class MessageHistoryActivity : AppCompatActivity() {
                 scope = scope,
             ).show()
         }
+    }
+
+    /**
+     * §3.1 — loads `(myIdPub, theirIdPub)` for `Sas.codeFor` / `Sas.fpPairBinding`.
+     * `myIdPub` is cached after the first read (KeyManager hits SharedPreferences);
+     * the contact's public key is reread each call so a re-pair mid-session reflects.
+     * Returns null only if the contact row was deleted between activity-open and call.
+     */
+    private suspend fun loadKeyPair(): Pair<ByteArray, ByteArray>? {
+        val contact = repository.getContact(contactId) ?: return null
+        val theirIdPub = android.util.Base64.decode(
+            contact.publicKeyBase64, android.util.Base64.NO_WRAP
+        )
+        val myIdPub = cachedMyIdPub ?: withContext(Dispatchers.IO) {
+            KeyManager(this@MessageHistoryActivity).getPublicKeyBytes()
+        }.also { cachedMyIdPub = it }
+        return myIdPub to theirIdPub
     }
 
     private fun runManualReset() {
