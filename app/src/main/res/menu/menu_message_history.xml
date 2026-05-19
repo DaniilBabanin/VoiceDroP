@@ -8,6 +8,11 @@
         app:showAsAction="never"/>
 
     <item
+        android:id="@+id/action_verify_identity"
+        android:title="@string/verify_identity_menu"
+        app:showAsAction="never"/>
+
+    <item
         android:id="@+id/action_reset_session"
         android:title="@string/reset_secure_session"
         app:showAsAction="never"/>

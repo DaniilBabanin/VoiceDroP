@@ -110,4 +110,14 @@
     <string name="reset_in_progress">Reset in progress — waiting for the peer to acknowledge.</string>
     <string name="reset_initiated">Secure session reset — waiting for peer to acknowledge.</string>
     <string name="reset_refused_budget">Too many recent resets. Try again later or re-pair.</string>
+
+    <!-- §3.1 — identity-verification UX -->
+    <string name="verify_identity_menu">Verify identity</string>
+    <string name="verify_identity_title">Verify identity</string>
+    <string name="verify_identity_explainer">Compare these emojis with your contact\'s screen. They should be identical.</string>
+    <string name="verify_identity_status_unverified">Status: Not yet verified</string>
+    <string name="verify_identity_status_verified">Status: Verified %1$s</string>
+    <string name="verify_identity_button_mark">Mark as verified</string>
+    <string name="verify_identity_button_clear">Clear verification</string>
+    <string name="verify_identity_button_close">Close</string>
 </resources>
