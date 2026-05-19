@@ -5,8 +5,6 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.crypto.tink.config.TinkConfig
 import com.google.crypto.tink.subtle.X25519
-import com.voicedrop.crypto.Bootstrap
-import com.voicedrop.crypto.ContactKey
 import com.voicedrop.crypto.KeyManager
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.ContactEntity
@@ -20,10 +18,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Post-DR17.5 pairing-flow coverage. The v1 ECDH session-key tests live in the
- * removed `RecordSendReceiveTest`; verification-emoji derivation now feeds off
- * `RK_0` from [Bootstrap.computeInitialBootstrap] — covered by [BootstrapTest]
- * in the unit-test tree.
+ * Post-§3.1 pairing-flow coverage. SAS derivation is identity-keyed via [Sas.codeFor]
+ * and tested independently by [com.voicedrop.crypto.SasTest]; this file covers the
+ * surrounding Room/contact persistence side of pairing.
  */
 @RunWith(AndroidJUnit4::class)
 class PairingFlowTest {
@@ -52,38 +49,20 @@ class PairingFlowTest {
     }
 
     @Test
-    fun verificationCodeIsSymmetricAndFourBytes() {
-        // DR17.5: SAS is now driven by RK_0 instead of the v1 ECDH session key.
-        // Both sides arrive at the same RK_0 from Bootstrap.computeInitialBootstrap;
-        // the symmetric-fingerprint sort inside computeVerificationCode keeps the
-        // 4-byte SAS identical regardless of which side computes it.
-        val alicePriv = aliceKeyManager.getPrivateKeyBytes()
+    fun sasCodeIsSymmetricAndSixEmojisIdentityKeyed() {
+        // §3.1 — SAS is keyed off identity public keys, not RK_0. Both sides arrive at
+        // identical emojis regardless of role and regardless of the ratchet state. The
+        // bootstrap still happens (to mirror the real flow), but RK_0 is no longer fed
+        // into the derivation.
         val alicePub = aliceKeyManager.getPublicKeyBytes()
-        val aliceFp = ContactKey.fingerprint(alicePub)
         val bobPriv = X25519.generatePrivateKey()
         val bobPub = X25519.publicFromPrivate(bobPriv)
-        val bobFp = ContactKey.fingerprint(bobPub)
-        val bobEphPriv = X25519.generatePrivateKey()
-        val bobEphPub = X25519.publicFromPrivate(bobEphPriv)
-        val aliceEphPriv = X25519.generatePrivateKey()
-        val aliceEphPub = X25519.publicFromPrivate(aliceEphPriv)
 
-        val aliceInitial = Bootstrap.computeInitialBootstrap(
-            myIdPriv = alicePriv, myIdPub = alicePub, peerIdPub = bobPub,
-            myBootstrapEphPriv = aliceEphPriv, myBootstrapEphPub = aliceEphPub,
-            peerBootstrapEphPub = bobEphPub
-        )
-        val bobInitial = Bootstrap.computeInitialBootstrap(
-            myIdPriv = bobPriv, myIdPub = bobPub, peerIdPub = alicePub,
-            myBootstrapEphPriv = bobEphPriv, myBootstrapEphPub = bobEphPub,
-            peerBootstrapEphPub = aliceEphPub
-        )
-        assertArrayEquals("RK_0 must converge", aliceInitial.rootKey, bobInitial.rootKey)
-
-        val codeFromAlice = ContactKey.computeVerificationCode(aliceInitial.rootKey, aliceFp, bobFp)
-        val codeFromBob = ContactKey.computeVerificationCode(bobInitial.rootKey, bobFp, aliceFp)
-        assertArrayEquals(codeFromAlice, codeFromBob)
-        assertEquals(4, codeFromAlice.size)
+        val codeFromAlice = com.voicedrop.crypto.Sas.codeFor(alicePub, bobPub)
+        val codeFromBob = com.voicedrop.crypto.Sas.codeFor(bobPub, alicePub)
+        assertEquals(codeFromAlice, codeFromBob)
+        assertEquals(6, codeFromAlice.size)
+        assertTrue(codeFromAlice.all { it.isNotEmpty() })
     }
 
     @Test

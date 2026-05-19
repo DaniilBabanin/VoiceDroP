@@ -291,13 +291,13 @@ class QrPairActivity : AppCompatActivity() {
     }
 
     /**
-     * Parse the scanned/imported card, immediately run [Bootstrap.computeInitialBootstrap]
-     * so the SAS emojis are derived from the actual ratchet root key (RK_0), then transition
-     * to the in-activity VERIFY state. Holding RK_0 in memory across the verify panel is
-     * required so an active MITM with control of both QR exchanges still produces mismatched
-     * emojis. DR17.6 — the re-pair peer-identity check fires here, before the bootstrap
-     * derivation, so a wrong-peer scan in re-pair mode is rejected before any key material
-     * is created.
+     * §3.1 — SAS emojis are derived from the IDENTITY public keys via [Sas.codeFor],
+     * stable for the lifetime of those keys. The bootstrap `initial.rootKey` (RK_0)
+     * is no longer used for SAS, but the verify panel still holds it across the
+     * VERIFY → CONFIRMING transition so confirmPairing can persist the v2 state.
+     * DR17.6 — the re-pair peer-identity check fires here, before the bootstrap
+     * derivation, so a wrong-peer scan in re-pair mode is rejected before any key
+     * material is created.
      */
     fun handleScannedCard(text: String) {
         android.util.Log.d(TAG, "handleScannedCard: ${text.take(80)}")
@@ -356,8 +356,7 @@ class QrPairActivity : AppCompatActivity() {
                     myIdPriv.fill(0)
                 }
 
-                val verificationBytes = ContactKey.computeVerificationCode(initial.rootKey, myFingerprint, theirFingerprint)
-                val emojis = PairingVerificationEmojiMap.getEmojisForBytes(verificationBytes)
+                val emojis = com.voicedrop.crypto.Sas.codeFor(myIdPub, theirPublicKeyBytes)
 
                 transitionToVerify(card, theirFingerprint, initial, emojis)
             } catch (e: Exception) {
@@ -482,11 +481,16 @@ class QrPairActivity : AppCompatActivity() {
         // implementation used to inline `wrapAndMac("rk", …)` / `wrapAndMac("dhs_priv", …)`
         // here while persistence read with `"contacts.rk_wrapped"` / `"contacts.dhs_priv_wrapped"`
         // — every first send then failed with WrapHmacMismatch on the load.
+        val myIdPub = keyManager.getPublicKeyBytes()
+        val theirIdPub = android.util.Base64.decode(card.pk, android.util.Base64.NO_WRAP)
+        val now = System.currentTimeMillis()
         val baseContact = ContactEntity(
             id = fingerprint,
             name = card.name,
             publicKeyBase64 = card.pk,
-            addedAt = System.currentTimeMillis()
+            addedAt = now,
+            verified_at = now,
+            verified_fp_pair_hash = com.voicedrop.crypto.Sas.fpPairBinding(myIdPub, theirIdPub),
         )
         val state = RatchetState(
             dhsPriv = initial.dhsPriv,
