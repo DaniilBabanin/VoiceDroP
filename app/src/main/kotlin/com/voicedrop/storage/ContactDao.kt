@@ -22,4 +22,12 @@ interface ContactDao {
 
     @Query("SELECT * FROM contacts ORDER BY addedAt DESC")
     suspend fun getAllList(): List<ContactEntity>
+
+    /** §3.1 — writes verification state. Called from pair-time auto-write and the in-chat Verify panel. */
+    @Query("UPDATE contacts SET verified_at = :at, verified_fp_pair_hash = :hash WHERE id = :id")
+    suspend fun setVerified(id: String, at: Long, hash: ByteArray)
+
+    /** §3.1 — clears verification state. Called from the "Clear verification" button. */
+    @Query("UPDATE contacts SET verified_at = NULL, verified_fp_pair_hash = NULL WHERE id = :id")
+    suspend fun clearVerified(id: String)
 }

@@ -54,7 +54,11 @@ data class ContactEntity(
     val budget_exhausted_until: Long = 0L,
     val consecutive_aead_failures: Int = 0,
     val consecutive_aead_failures_window_start: Long = 0L,
-    val soft_prompt_dismissed_until: Long = 0L
+    val soft_prompt_dismissed_until: Long = 0L,
+
+    // --- Identity verification (NEW in v4 — plan/09-security-frontier/3.1-sas-verification-ux.md) ---
+    val verified_at: Long? = null,
+    val verified_fp_pair_hash: ByteArray? = null
 ) {
     // Equality by id only — ByteArray's reference-equality would break DiffUtil and dedup helpers.
     override fun equals(other: Any?): Boolean {
@@ -64,4 +68,15 @@ data class ContactEntity(
     }
 
     override fun hashCode(): Int = id.hashCode()
+}
+
+/**
+ * §3.1 — true iff this row was marked verified AND the stored binding still matches
+ * the current pair of identity keys. Returns false on any rotation of either party's
+ * identity key — that's the auto-invalidation §3.2 will rely on.
+ */
+fun ContactEntity.isVerifiedAgainst(myIdPub: ByteArray, theirIdPub: ByteArray): Boolean {
+    val storedHash = verified_fp_pair_hash ?: return false
+    if (verified_at == null) return false
+    return storedHash.contentEquals(com.voicedrop.crypto.Sas.fpPairBinding(myIdPub, theirIdPub))
 }

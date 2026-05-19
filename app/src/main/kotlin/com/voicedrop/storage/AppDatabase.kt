@@ -8,11 +8,15 @@ import androidx.room.TypeConverter
 import androidx.room.TypeConverters
 
 /**
- * Schema v3 — Double Ratchet (plan/08-dr/dr3-db-schema-v3.md).
+ * Schema v4 — Double Ratchet (plan/08-dr/dr3-db-schema-v3.md) +
+ * identity verification (plan/09-security-frontier/3.1-sas-verification-ux.md).
  *
- * Hard cutover from v1.x: no migration code path. `fallbackToDestructiveMigration` drops everything
- * on first v1.2 launch. The "Pair again" UX is wired up via [RepairNamesStash], which copies contact
- * display names out of the old DB file *before* Room takes ownership.
+ * v1.x → v3 was a hard cutover (destructive). v3 → v4 is the FIRST real migration
+ * — adds `verified_at` and `verified_fp_pair_hash` columns to `contacts`. The
+ * fallback policy switches to `fallbackToDestructiveMigrationOnDowngrade` so
+ * upgrades require a real `Migration` while downgrades (sideloading an older APK)
+ * still wipe cleanly. The "Pair again" UX is wired up via [RepairNamesStash], which
+ * copies contact display names out of the old DB file *before* Room takes ownership.
  */
 @Database(
     entities = [
@@ -22,7 +26,7 @@ import androidx.room.TypeConverters
         SkippedMessageKeyEntity::class,
         PendingOutboundFrameEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 @TypeConverters(AppDatabase.Converters::class)
@@ -62,7 +66,8 @@ abstract class AppDatabase : RoomDatabase() {
                         AppDatabase::class.java,
                         "voicedrop.db"
                     )
-                        .fallbackToDestructiveMigration(dropAllTables = true)
+                        .addMigrations(Migration_3_4)
+                        .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                         .build()
                         .also {
                             instance = it
