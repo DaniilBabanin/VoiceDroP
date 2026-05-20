@@ -26,7 +26,10 @@ object ActiveContactsPrefs {
         prefs(context).edit().putStringSet(KEY_ACTIVE_IDS, ids).apply()
     }
 
-    /** Atomic add/remove for a single id. */
+    /**
+     * Single-id add/remove via read-modify-write. Not thread-safe;
+     * intended for main-thread checkbox callbacks only.
+     */
     fun setActive(context: Context, id: String, active: Boolean) {
         val current = getActiveIds(context).toMutableSet()
         if (active) current.add(id) else current.remove(id)
@@ -62,9 +65,9 @@ object ActiveContactsPrefs {
     private fun migrateDefaultIntoSet(context: Context) {
         val p = prefs(context)
         if (p.getBoolean(KEY_DEFAULT_MIGRATED, false)) return
-        val edit = p.edit().putBoolean(KEY_DEFAULT_MIGRATED, true).remove(KEY_LEGACY_DEFAULT)
         val legacyDefault = p.getString(KEY_LEGACY_DEFAULT, null)
         val existingSet = p.getStringSet(KEY_ACTIVE_IDS, null)
+        val edit = p.edit().putBoolean(KEY_DEFAULT_MIGRATED, true).remove(KEY_LEGACY_DEFAULT)
         if (legacyDefault != null && existingSet == null) {
             edit.putStringSet(KEY_ACTIVE_IDS, setOf(legacyDefault))
         }

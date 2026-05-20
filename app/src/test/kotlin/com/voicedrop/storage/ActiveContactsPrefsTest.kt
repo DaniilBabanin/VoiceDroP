@@ -142,6 +142,7 @@ class ActiveContactsPrefsTest {
 
         assertEquals(setOf("explicit-b"), ids)
         assertNull(prefs().getString("pref_default_contact_id", null))
+        assertTrue(prefs().getBoolean("pref_default_migrated_to_set", false))
     }
 
     @Test
