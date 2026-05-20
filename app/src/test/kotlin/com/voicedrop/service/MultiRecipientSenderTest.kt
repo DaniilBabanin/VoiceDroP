@@ -145,7 +145,7 @@ class MultiRecipientSenderTest {
         assertTrue(result.successfulRecipientIds.isEmpty())
         assertEquals(listOf("c1", "c2"), result.failedRecipientIds)
         // No opus files left under tmpDir.
-        assertEquals(emptyList<String>(), tmpDir.listFiles()?.map { it.name } ?: emptyList())
+        assertEquals(emptyList<String>(), tmpDir.listFiles()?.map { it.name } ?: emptyList<String>())
     }
 
     @Test
