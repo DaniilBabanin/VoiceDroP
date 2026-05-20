@@ -30,7 +30,7 @@ import androidx.room.Index
         childColumns = ["contact_id"],
         onDelete = ForeignKey.CASCADE
     )],
-    indices = [Index(value = ["contact_id", "status"])]
+    indices = [Index(value = ["contact_id", "status"], name = "idx_prekey_epochs_status")]
 )
 data class PrekeyEpochEntity(
     val contact_id: String,
