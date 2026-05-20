@@ -14,10 +14,8 @@ import com.google.crypto.tink.subtle.X25519
 import com.voicedrop.audio.AudioPlayer
 import com.voicedrop.audio.AudioRecorder
 import com.voicedrop.crypto.AutoResetTrigger
-import com.voicedrop.crypto.AwaitingFirstReceive
 import com.voicedrop.crypto.Bootstrap
 import com.voicedrop.crypto.KeyManager
-import com.voicedrop.crypto.MessagePayload
 import com.voicedrop.crypto.RatchetDecryptAndPersist
 import com.voicedrop.crypto.RatchetEncryptAndSend
 import com.voicedrop.crypto.ReceiptInboundHandler
@@ -67,7 +65,7 @@ class VoiceDropService : Service() {
     private val audioRecorder = AudioRecorder()
     private val audioPlayer = AudioPlayer()
 
-    private var recordingContactId: String? = null
+    private var recordingContactIds: List<String> = emptyList()
     private var recordStartTime: Long = 0L
     private var recordStartElapsedRealtime: Long = 0L
     private var recordingJob: Deferred<ByteArray>? = null
@@ -226,8 +224,10 @@ class VoiceDropService : Service() {
                 }
             }
             ACTION_RECORD_START -> {
-                val contactId = intent.getStringExtra(EXTRA_CONTACT_ID) ?: return START_STICKY
-                startRecording(contactId)
+                val ids = intent.getStringArrayExtra(EXTRA_CONTACT_IDS)?.toList()
+                    ?: intent.getStringExtra(EXTRA_CONTACT_ID)?.let { listOf(it) }
+                    ?: return START_STICKY
+                startRecording(ids)
             }
             ACTION_RECORD_STOP -> stopRecording()
             ACTION_PLAY -> {
@@ -239,17 +239,23 @@ class VoiceDropService : Service() {
         return START_STICKY
     }
 
-    private fun startRecording(contactId: String) {
-        recordingContactId = contactId
+    private fun startRecording(contactIds: List<String>) {
+        if (contactIds.isEmpty()) return
+        recordingContactIds = contactIds
         recordStartTime = System.currentTimeMillis()
         recordStartElapsedRealtime = SystemClock.elapsedRealtime()
 
         scope.launch {
-            val c = repository.getContact(contactId)
-            val contactName = c?.name ?: "Contact"
+            val firstContact = repository.getContact(contactIds.first())
+            // Notification label: single name if 1 recipient, "N recipients" otherwise.
+            val notificationLabel = if (contactIds.size == 1) {
+                firstContact?.name ?: "Contact"
+            } else {
+                "${contactIds.size} recipients"
+            }
 
             val notification = notificationHelper.buildRecordingNotification(
-                contactName,
+                notificationLabel,
                 recordStartTime,
             )
             startForeground(NOTIFICATION_ID_RECORDING, notification)
@@ -257,7 +263,7 @@ class VoiceDropService : Service() {
             vibrateDouble()
             ServiceState.updateState(
                 ServiceState.State.RECORDING,
-                listOf(contactId),
+                contactIds,
                 recordStartElapsedRealtime,
                 recordStartTime,
             )
@@ -277,11 +283,11 @@ class VoiceDropService : Service() {
 
     private fun stopRecording() {
         scope.launch {
-            val contactId = recordingContactId ?: return@launch
-            recordingContactId = null
+            val contactIds = recordingContactIds.takeIf { it.isNotEmpty() } ?: return@launch
+            recordingContactIds = emptyList()
 
             vibrateSingle()
-            ServiceState.updateState(ServiceState.State.SENDING, listOf(contactId))
+            ServiceState.updateState(ServiceState.State.SENDING, contactIds)
             VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
             notificationHelper.updateRecordingNotification(NOTIFICATION_ID_RECORDING, "Sending…")
 
@@ -291,48 +297,48 @@ class VoiceDropService : Service() {
                 recordingJob = null
                 val durationMs = (System.currentTimeMillis() - recordStartTime).toInt()
 
-                val contact = repository.getContact(contactId) ?: return@launch
-                val deleteAfterMs = contact.autoDeleteAfterMs
-                val payload = MessagePayload.encodeVoice(durationMs, deleteAfterMs, opusBytes)
+                // Per-contact auto-delete window: each recipient's row honors that
+                // contact's autoDeleteAfterMs setting.
+                val deleteAfterMsByContact = mutableMapOf<String, Long>()
+                for (id in contactIds) {
+                    val c = repository.getContact(id)
+                    if (c != null) deleteAfterMsByContact[id] = c.autoDeleteAfterMs
+                }
+                val liveRecipients = contactIds.filter { it in deleteAfterMsByContact }
+                if (liveRecipients.isEmpty()) {
+                    Log.w(TAG, "stopRecording: no live recipients (all deleted mid-record?) — dropping send")
+                    return@launch
+                }
 
                 acquireWakeLock()
 
-                val sent = ratchetSender.encryptAndSend(contactId, payload) { _, frameUuidBytes, now ->
-                    val uuidStr = uuidBytesToUuidString(frameUuidBytes)
-                    val messagesDir = File(filesDir, "messages").apply { mkdirs() }
-                    val opusFile = File(messagesDir, "$uuidStr.opus")
-                    // DR17.5 decision 2b — plaintext audio at rest.
-                    opusFile.writeBytes(opusBytes)
-                    MessageEntity(
-                        uuid = uuidStr,
-                        contactId = contactId,
-                        direction = MessageEntity.DIRECTION_OUTBOUND,
-                        state = MessageEntity.STATE_SENT,
-                        transport = TransportType.UNKNOWN,
-                        encryptedFilePath = opusFile.absolutePath,
-                        durationMs = durationMs,
-                        deleteAfterMs = deleteAfterMs,
-                        scheduledDeleteAt = 0L,
-                        transcription = null,
-                        createdAt = now,
-                        sentAt = now,
-                        deliveredAt = 0L,
-                        delivery_state = MessageEntity.DELIVERY_PENDING
-                    )
+                val sender = MultiRecipientSender(
+                    messagesDir = File(filesDir, "messages"),
+                    encryptAndSend = ratchetSender::encryptAndSend,
+                )
+                val result = sender.sendVoice(
+                    recipientIds = liveRecipients,
+                    opusBytes = opusBytes,
+                    durationMs = durationMs,
+                    deleteAfterMsByContact = deleteAfterMsByContact,
+                )
+
+                if (result.failedRecipientIds.isNotEmpty() && result.successfulRecipientIds.isEmpty()) {
+                    // All recipients failed: surface the same UX as the legacy single-recipient
+                    // AwaitingFirstReceive toast. Concrete cause is in the logs.
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        android.widget.Toast.makeText(
+                            this@VoiceDropService,
+                            "Setting up secure channel — try again in a moment",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }
                 }
-                Log.i(TAG, "sent voice memo ${sent.frameUuidHex.take(8)} (${durationMs}ms) to ${contactId.take(8)}")
-            } catch (e: AwaitingFirstReceive) {
-                // DR17.5 §"Bob's can't-send-first UX" — fall-through toast for the edge
-                // case where the user managed to record on a contact whose ratchet hasn't
-                // yet learned `dhr_pub` (Alice's HELLO is still in flight).
-                Log.w(TAG, "send blocked — awaiting first receive: ${e.message}")
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    android.widget.Toast.makeText(
-                        this@VoiceDropService,
-                        "Setting up secure channel — try again in a moment",
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
-                }
+                Log.i(
+                    TAG,
+                    "sent voice memo (${durationMs}ms) to ${result.successfulRecipientIds.size}/" +
+                        "${liveRecipients.size} recipients — failed: ${result.failedRecipientIds.joinToString { it.take(8) }}"
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send message", e)
             } finally {
@@ -387,7 +393,7 @@ class VoiceDropService : Service() {
         audioRecorder.stopRecording()
         recordingJob?.cancel()
         recordingJob = null
-        recordingContactId = null
+        recordingContactIds = emptyList()
         releaseWakeLock()
         stopSelf()
     }
@@ -444,6 +450,7 @@ class VoiceDropService : Service() {
         /** DR17.5 W3 — UI hook for "kick the outbox now" (e.g. after pairing auto-HELLO). */
         const val ACTION_FLUSH_OUTBOX = "com.voicedrop.ACTION_FLUSH_OUTBOX"
         const val EXTRA_CONTACT_ID = "contact_id"
+        const val EXTRA_CONTACT_IDS = "contact_ids"    // string array, used by tile + All-widget
         const val EXTRA_UUID = "uuid"
         const val NOTIFICATION_ID_IDLE = 1000
         const val NOTIFICATION_ID_RECORDING = 1001
@@ -453,6 +460,12 @@ class VoiceDropService : Service() {
             Intent(context, VoiceDropService::class.java).apply {
                 action = ACTION_RECORD_START
                 putExtra(EXTRA_CONTACT_ID, contactId)
+            }
+
+        fun recordStartAllIntent(context: Context, contactIds: List<String>) =
+            Intent(context, VoiceDropService::class.java).apply {
+                action = ACTION_RECORD_START
+                putExtra(EXTRA_CONTACT_IDS, contactIds.toTypedArray())
             }
 
         fun recordStopIntent(context: Context) =
@@ -475,12 +488,5 @@ class VoiceDropService : Service() {
             Intent(context, VoiceDropService::class.java).apply {
                 action = ACTION_FLUSH_OUTBOX
             }
-
-        /** 16-byte UUID bytes → standard dashed UUID string. */
-        private fun uuidBytesToUuidString(bytes: ByteArray): String {
-            require(bytes.size == 16) { "uuid bytes must be 16" }
-            val bb = java.nio.ByteBuffer.wrap(bytes)
-            return java.util.UUID(bb.long, bb.long).toString()
-        }
     }
 }
