@@ -31,6 +31,7 @@ import com.voicedrop.storage.MessageRepository
 import com.voicedrop.storage.TransportType
 import com.voicedrop.ui.SettingsActivity.Companion.PREF_RELAY_FALLBACK_ENABLED
 import com.voicedrop.ui.VoiceDropWidgetProvider
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -339,6 +340,8 @@ class VoiceDropService : Service() {
                     "sent voice memo (${durationMs}ms) to ${result.successfulRecipientIds.size}/" +
                         "${liveRecipients.size} recipients — failed: ${result.failedRecipientIds.joinToString { it.take(8) }}"
                 )
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send message", e)
             } finally {
