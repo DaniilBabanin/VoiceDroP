@@ -79,10 +79,32 @@ class PrekeyDerivationTest {
     }
 
     companion object {
-        // Pinned after first run. Replacing these intentionally is the only way
-        // a future /v3 bump can land without this test catching the drift.
-        private val K_RESET_V2_GOLDEN = ByteArray(32) // TODO replace after Step 5
-        private val RK0_V2_GOLDEN = ByteArray(32) // TODO replace after Step 5
-        private val RK0_INITIAL_V2_GOLDEN = ByteArray(32) // TODO replace after Step 5
+        // Pinned via Python HKDF-SHA256 (RFC 5869, cross-checked against RFC TC1).
+        // Replacing these intentionally is the only way a future /v3 bump can
+        // land without this test catching the drift.
+
+        // hex: 30f01995f5ea9f36013411f49656f53c9eeb57b0dea015a36a7b478aeca354de
+        private val K_RESET_V2_GOLDEN = byteArrayOf(
+            0x30, 0xF0.toByte(), 0x19, 0x95.toByte(), 0xF5.toByte(), 0xEA.toByte(), 0x9F.toByte(), 0x36,
+            0x01, 0x34, 0x11, 0xF4.toByte(), 0x96.toByte(), 0x56, 0xF5.toByte(), 0x3C,
+            0x9E.toByte(), 0xEB.toByte(), 0x57, 0xB0.toByte(), 0xDE.toByte(), 0xA0.toByte(), 0x15, 0xA3.toByte(),
+            0x6A, 0x7B, 0x47, 0x8A.toByte(), 0xEC.toByte(), 0xA3.toByte(), 0x54, 0xDE.toByte()
+        )
+
+        // hex: 69f84f506bbfb4c1c874c912af3b48a5da4425b802f7f677bea921b6e0629a4b
+        private val RK0_V2_GOLDEN = byteArrayOf(
+            0x69, 0xF8.toByte(), 0x4F, 0x50, 0x6B, 0xBF.toByte(), 0xB4.toByte(), 0xC1.toByte(),
+            0xC8.toByte(), 0x74, 0xC9.toByte(), 0x12, 0xAF.toByte(), 0x3B, 0x48, 0xA5.toByte(),
+            0xDA.toByte(), 0x44, 0x25, 0xB8.toByte(), 0x02, 0xF7.toByte(), 0xF6.toByte(), 0x77,
+            0xBE.toByte(), 0xA9.toByte(), 0x21, 0xB6.toByte(), 0xE0.toByte(), 0x62, 0x9A.toByte(), 0x4B
+        )
+
+        // hex: f785a1840760f249a80fa83445b906e3dc719f7b0b6ff37903204ba1b14333c0
+        private val RK0_INITIAL_V2_GOLDEN = byteArrayOf(
+            0xF7.toByte(), 0x85.toByte(), 0xA1.toByte(), 0x84.toByte(), 0x07, 0x60, 0xF2.toByte(), 0x49,
+            0xA8.toByte(), 0x0F, 0xA8.toByte(), 0x34, 0x45, 0xB9.toByte(), 0x06, 0xE3.toByte(),
+            0xDC.toByte(), 0x71, 0x9F.toByte(), 0x7B, 0x0B, 0x6F, 0xF3.toByte(), 0x79,
+            0x03, 0x20, 0x4B, 0xA1.toByte(), 0xB1.toByte(), 0x43, 0x33, 0xC0.toByte()
+        )
     }
 }
