@@ -40,6 +40,10 @@ class SettingsActivity : AppCompatActivity() {
         setSupportActionBar(toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
+        EdgeToEdgeSetup.apply(this)
+        EdgeToEdgeSetup.applyTopInset(toolbar)
+        EdgeToEdgeSetup.applyBottomInset(findViewById(R.id.scroll_settings))
+
         val prefs = getSharedPreferences("voicedrop_settings", MODE_PRIVATE)
         val keyManager = KeyManager(this)
 

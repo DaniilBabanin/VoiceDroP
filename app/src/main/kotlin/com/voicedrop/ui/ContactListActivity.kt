@@ -54,6 +54,7 @@ class ContactListActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_contact_list)
+        EdgeToEdgeSetup.apply(this)
         requestMissingPermissions()
 
         val db = AppDatabase.getInstance(this)
@@ -93,6 +94,7 @@ class ContactListActivity : AppCompatActivity() {
                 showSignalingUrlRequiredDialog()
             }
         }
+        EdgeToEdgeSetup.applyBottomInset(fab)
 
         checkOnboarding()
 

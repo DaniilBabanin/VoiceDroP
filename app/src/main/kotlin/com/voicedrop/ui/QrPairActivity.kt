@@ -167,6 +167,9 @@ class QrPairActivity : AppCompatActivity() {
         setSupportActionBar(toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
+        EdgeToEdgeSetup.apply(this)
+        EdgeToEdgeSetup.applyTopInset(toolbar)
+
         keyManager = KeyManager(this)
         db = AppDatabase.getInstance(this)
         repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())

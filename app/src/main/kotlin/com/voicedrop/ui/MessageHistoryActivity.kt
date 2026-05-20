@@ -45,6 +45,7 @@ class MessageHistoryActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_message_history)
+        EdgeToEdgeSetup.apply(this)
 
         contactId = intent.getStringExtra(EXTRA_CONTACT_ID) ?: run { finish(); return }
         val contactName = intent.getStringExtra(EXTRA_CONTACT_NAME) ?: contactId
@@ -74,6 +75,7 @@ class MessageHistoryActivity : AppCompatActivity() {
         val layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
         recyclerView.layoutManager = layoutManager
         recyclerView.adapter = adapter
+        EdgeToEdgeSetup.applyBottomInset(recyclerView)
 
         val emptyState = findViewById<TextView>(R.id.text_empty_messages)
 

@@ -28,10 +28,6 @@
         <!-- Manrope is the default font family for every default-styled view. -->
         <item name="android:fontFamily">@font/manrope</item>
         <item name="fontFamily">@font/manrope</item>
-
-        <!-- Phase C removes this opt-out. Kept here so commit 1 is independently sane
-             (no edge-to-edge insets handler yet). -->
-        <item name="android:windowOptOutEdgeToEdgeEnforcement" tools:targetApi="35">true</item>
     </style>
 
     <style name="Theme.VoiceDrop.Translucent" parent="Theme.Material3.DayNight.NoActionBar">

@@ -26,6 +26,10 @@ class PrivacyPolicyActivity : AppCompatActivity() {
         setSupportActionBar(toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
+        EdgeToEdgeSetup.apply(this)
+        EdgeToEdgeSetup.applyTopInset(toolbar)
+        EdgeToEdgeSetup.applyBottomInset(findViewById(R.id.scroll_privacy))
+
         val textView = findViewById<TextView>(R.id.text_privacy_policy)
 
         val source = try {
