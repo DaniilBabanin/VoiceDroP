@@ -80,6 +80,10 @@ class PendingOutboxReplay(
     }
 
     private suspend fun replayOne(row: PendingOutboundFrameEntity) {
+        // §3.2 invariant: do NOT re-derive K_reset on the retransmit path. The wrapped
+        // frame bytes were keyed under prekeySS at enqueue time; the active prekey may
+        // have rotated since. Re-derivation would silently key the replay under the
+        // wrong epoch. Replay the persisted bytes verbatim.
         val now = clock()
         if (hasGivenUp(row, now)) {
             handleGiveUp(row, now)

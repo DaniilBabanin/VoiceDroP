@@ -24,7 +24,7 @@ object Bootstrap {
     enum class Role { ALICE, BOB }
 
     /** HKDF info prefix per plan/08-dr/00-overview.md §3. */
-    const val HKDF_PURPOSE = "voicedrop/rk-bootstrap/v1"
+    const val HKDF_PURPOSE = "voicedrop/rk-bootstrap/v2"
 
     const val ROOT_KEY_BYTES = 32
     const val RESET_NONCE_BYTES = 16
@@ -75,19 +75,32 @@ object Bootstrap {
     }
 
     /**
-     * Post-reset. `ikm = idShared` (32 B); `info = prefix || 0x00 || be32(R) || resetNonce`.
+     * §3.2 — Post-reset RK_0. `ikm = idShared || prekeySS` (64 B);
+     * `info = "voicedrop/rk-bootstrap/v2" || 0x00 || be32(R) || resetNonce`.
      *
-     * `resetNonce` rides in the **info** (not the salt) so two peers who arrive at the same
-     * `R` from different `resetNonce` derive different `RK_0` — silent divergence then
-     * surfaces as AEAD failure on the first post-reset DATA frame instead of corrupting
-     * messages invisibly. See [dr5-bootstrap.md].
+     * `prekeySS` is the X25519 shared secret between the active prekey row
+     * on each side at the moment the cycle starts (NOT the freshly-generated
+     * staged prekey — see spec §3.4 "Where prekeySS comes from").
      */
-    fun deriveResetRootKey(idShared: ByteArray, R: Int, resetNonce: ByteArray): ByteArray {
+    fun deriveResetRootKey(
+        idShared: ByteArray,
+        prekeySS: ByteArray,
+        R: Int,
+        resetNonce: ByteArray
+    ): ByteArray {
         require(idShared.size == X25519_BYTES) { "idShared must be $X25519_BYTES bytes" }
+        require(prekeySS.size == X25519_BYTES) { "prekeySS must be $X25519_BYTES bytes" }
         require(resetNonce.size == RESET_NONCE_BYTES) { "resetNonce must be $RESET_NONCE_BYTES bytes" }
         require(R > 0) { "deriveResetRootKey requires R > 0 (use deriveInitialRootKey for first pairing)" }
+        val ikm = ByteArray(idShared.size + prekeySS.size)
+        idShared.copyInto(ikm, 0)
+        prekeySS.copyInto(ikm, idShared.size)
         val info = buildInfo(R = R, resetNonce = resetNonce)
-        return hkdfSha256(salt = ByteArray(32), ikm = idShared, info = info, length = ROOT_KEY_BYTES)
+        try {
+            return hkdfSha256(salt = ByteArray(32), ikm = ikm, info = info, length = ROOT_KEY_BYTES)
+        } finally {
+            ikm.fill(0)
+        }
     }
 
     /**

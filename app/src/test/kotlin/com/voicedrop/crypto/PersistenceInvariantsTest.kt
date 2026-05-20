@@ -9,6 +9,7 @@ import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.ContactEntity
 import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.PendingOutboundFrameEntity
+import com.voicedrop.storage.PrekeyEpochEntity
 import com.voicedrop.storage.TransportType
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -497,8 +498,11 @@ class PersistenceInvariantsTest {
         val nonceB = ByteArray(16) { (0x80 + it).toByte() }
         val R = 1
 
-        val rkA = Bootstrap.deriveResetRootKey(idShared, R, nonceA)
-        val rkB = Bootstrap.deriveResetRootKey(idShared, R, nonceB)
+        // Synthetic prekeySS — value doesn't matter for this nonce-divergence test,
+        // only that both sides agree (mirrors how idShared is treated above).
+        val prekeySS = ByteArray(32) { (0x55 + it).toByte() }
+        val rkA = Bootstrap.deriveResetRootKey(idShared, prekeySS, R, nonceA)
+        val rkB = Bootstrap.deriveResetRootKey(idShared, prekeySS, R, nonceB)
         assertFalse(
             "deriveResetRootKey must surface nonce differences in RK_0",
             rkA.contentEquals(rkB)
@@ -553,8 +557,9 @@ class PersistenceInvariantsTest {
         val aliceManualNonce = ByteArray(16) { (0x20 + it).toByte() }
         val bobAutoNonce = ByteArray(16) { (0x90 + it).toByte() }
 
-        val rkA = Bootstrap.deriveResetRootKey(idShared, R, aliceManualNonce)
-        val rkB = Bootstrap.deriveResetRootKey(idShared, R, bobAutoNonce)
+        val prekeySS = ByteArray(32) { (0x55 + it).toByte() }
+        val rkA = Bootstrap.deriveResetRootKey(idShared, prekeySS, R, aliceManualNonce)
+        val rkB = Bootstrap.deriveResetRootKey(idShared, prekeySS, R, bobAutoNonce)
         assertFalse(rkA.contentEquals(rkB))
 
         // Both sides synthetically bootstrap to the same R via different
@@ -631,8 +636,11 @@ class PersistenceInvariantsTest {
         // persist the post-init state directly via `installPostInitState`.
         val aliceNonce = ByteArray(16) { (0x11 + it).toByte() }
         val bobNonce = ByteArray(16) { (0x77 + it).toByte() }
-        val rkAlice = Bootstrap.deriveResetRootKey(idShared, 1, aliceNonce)
-        val rkBob = Bootstrap.deriveResetRootKey(idShared, 1, bobNonce)
+        // §3.2 — must match what Alice's / Bob's receive code derives from their
+        // active prekey rows (seeded by [seedAliceContact]/[seedBobContact]).
+        val prekeySS = pair.prekeySS
+        val rkAlice = Bootstrap.deriveResetRootKey(idShared, prekeySS, 1, aliceNonce)
+        val rkBob = Bootstrap.deriveResetRootKey(idShared, prekeySS, 1, bobNonce)
         assertFalse("RK_0 must differ across distinct nonces at same R",
             rkAlice.contentEquals(rkBob))
 
@@ -660,6 +668,7 @@ class PersistenceInvariantsTest {
             senderFp = pair.aliceFingerprint,
             recipFp = pair.bobFingerprint,
             idShared = idShared,
+            prekeySS = pair.prekeySS,
             resetNonce = aliceNonce,
             r = 1,
             postResetEphPub = ByteArray(ResetCrypto.POST_RESET_EPH_PUB_BYTES)
@@ -668,6 +677,7 @@ class PersistenceInvariantsTest {
             senderFp = pair.bobFingerprint,
             recipFp = pair.aliceFingerprint,
             idShared = idShared,
+            prekeySS = pair.prekeySS,
             resetNonce = bobNonce,
             r = 1,
             postResetEphPub = bobPostResetPub
@@ -783,15 +793,23 @@ class PersistenceInvariantsTest {
         senderFp: ByteArray,
         recipFp: ByteArray,
         idShared: ByteArray,
+        prekeySS: ByteArray,
         resetNonce: ByteArray,
         r: Int,
         postResetEphPub: ByteArray
     ): FrameCodec.DecodedFrame {
+        // §3.2 — `prekeySS` is what the recipient's receive code will derive from
+        // its own active prekey row; X25519 symmetry means both sides see the
+        // same 32 bytes. Caller passes `pair.prekeySS`. `stagedPrekeyPub` is
+        // validated post-AEAD via [isValidX25519Public], so use a fresh real pub
+        // rather than a fixed bit pattern that might collide with a low-order
+        // point as the validator evolves.
         val plaintext = ResetCrypto.Plaintext(
             ack = ResetCrypto.ACK_INITIATOR,
-            postResetEphPub = postResetEphPub.copyOf()
+            postResetEphPub = postResetEphPub.copyOf(),
+            stagedPrekeyPub = X25519.publicFromPrivate(X25519.generatePrivateKey())
         )
-        val kReset = ResetCrypto.deriveKReset(idShared, senderFp, recipFp, resetNonce, r)
+        val kReset = ResetCrypto.deriveKReset(idShared, prekeySS, senderFp, recipFp, resetNonce, r)
         try {
             val frameUuid = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
             val wireBytes = ResetCrypto.encode(
@@ -838,7 +856,15 @@ class PersistenceInvariantsTest {
         val bobIdPub: ByteArray,
         val aliceInitial: Bootstrap.InitialState,
         val bobInitial: Bootstrap.InitialState,
-        val bobState: RatchetState
+        val bobState: RatchetState,
+        // §3.2 — per-side active prekey keypair and the shared `prekeySS` they
+        // both derive. Production's `ResetReceive.loadActivePrekeySS` reads from
+        // `prekey_epochs.active`; both sides compute the same prekeySS by
+        // X25519 symmetry, so frame-construction helpers in this test class
+        // must use `prekeySS` whenever they synthesize a K_reset.
+        val alicePrekey: Prekey.KeyPair,
+        val bobPrekey: Prekey.KeyPair,
+        val prekeySS: ByteArray
     )
 
     /** Roll a pair until the local side rolls into the ALICE role (sends first). */
@@ -860,6 +886,8 @@ class PersistenceInvariantsTest {
         val aBoot = Bootstrap.computeInitialBootstrap(aPriv, aPub, bPub, aEphPriv, aEphPub, bEphPub)
         val bBoot = Bootstrap.computeInitialBootstrap(bPriv, bPub, aPub, bEphPriv, bEphPub, aEphPub)
 
+        val alicePrekey = Prekey.generate()
+        val bobPrekey = Prekey.generate()
         return Pair(
             aliceContactId = bPub.joinToString("") { "%02x".format(it) },
             bobContactId = aPub.joinToString("") { "%02x".format(it) },
@@ -869,7 +897,10 @@ class PersistenceInvariantsTest {
             bobIdPub = bPub,
             aliceInitial = aBoot,
             bobInitial = bBoot,
-            bobState = RatchetState.fromBootstrap(bBoot)
+            bobState = RatchetState.fromBootstrap(bBoot),
+            alicePrekey = alicePrekey,
+            bobPrekey = bobPrekey,
+            prekeySS = Prekey.sharedSecret(alicePrekey.priv, bobPrekey.pub)
         )
     }
 
@@ -884,6 +915,8 @@ class PersistenceInvariantsTest {
         val withState = RatchetStatePersistence.saveRatchetState(initial, state, wrapMac)
             .copy(expecting_ack = expectingAck)
         runBlocking { aliceDb.contactDao().upsert(withState) }
+        // §3.2 — Alice's active prekey: her own priv, peer = Bob's prekey pub.
+        insertActivePrekey0(aliceDb, pair.aliceContactId, pair.alicePrekey, pair.bobPrekey.pub)
     }
 
     private fun seedBobContact(pair: Pair) {
@@ -896,6 +929,30 @@ class PersistenceInvariantsTest {
         val state = RatchetState.fromBootstrap(pair.bobInitial)
         val withState = RatchetStatePersistence.saveRatchetState(initial, state, wrapMac)
         runBlocking { bobDb.contactDao().upsert(withState) }
+        // §3.2 — Bob's active prekey mirrors Alice's: prekeySS is symmetric.
+        insertActivePrekey0(bobDb, pair.bobContactId, pair.bobPrekey, pair.alicePrekey.pub)
+    }
+
+    private fun insertActivePrekey0(
+        db: AppDatabase,
+        contactId: String,
+        kp: Prekey.KeyPair,
+        peerPrekeyPub: ByteArray
+    ) = runBlocking {
+        val rowId = PrekeyEpochEntity.rowIdFor(contactId, 0)
+        val (privW, privH) = wrapMac.wrapAndMac(PrekeyEpochEntity.COL_MY_PRIV, rowId, kp.priv)
+        db.prekeyEpochDao().insert(
+            PrekeyEpochEntity(
+                contact_id = contactId,
+                epoch = 0,
+                status = PrekeyEpochEntity.STATUS_ACTIVE,
+                my_priv_wrapped = privW,
+                my_priv_hmac = privH,
+                my_pub = kp.pub,
+                peer_pub = peerPrekeyPub,
+                expires_at = null
+            )
+        )
     }
 
     /**

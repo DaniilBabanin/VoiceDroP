@@ -8,13 +8,15 @@ import androidx.room.TypeConverter
 import androidx.room.TypeConverters
 
 /**
- * Schema v4 — Double Ratchet (plan/08-dr/dr3-db-schema-v3.md) +
- * identity verification (plan/09-security-frontier/3.1-sas-verification-ux.md).
+ * Schema v5 — v4 → v5 — §3.2: per-pair rotating prekey on top of identity.
+ * Wipes ratchet state on every existing contact (forces re-pair); identity /
+ * verification / messages preserved.
  *
  * v1.x → v3 was a hard cutover (destructive). v3 → v4 is the FIRST real migration
- * — adds `verified_at` and `verified_fp_pair_hash` columns to `contacts`. The
- * fallback policy switches to `fallbackToDestructiveMigrationOnDowngrade` so
- * upgrades require a real `Migration` while downgrades (sideloading an older APK)
+ * — adds `verified_at` and `verified_fp_pair_hash` columns to `contacts`. v4 → v5
+ * adds the `prekey_epochs` table and wipes ratchet state on all existing contacts
+ * (see Migration_4_5). The fallback policy is `fallbackToDestructiveMigrationOnDowngrade`
+ * so upgrades require a real `Migration` while downgrades (sideloading an older APK)
  * still wipe cleanly. The "Pair again" UX is wired up via [RepairNamesStash], which
  * copies contact display names out of the old DB file *before* Room takes ownership.
  */
@@ -24,9 +26,10 @@ import androidx.room.TypeConverters
         MessageEntity::class,
         PendingActionEntity::class,
         SkippedMessageKeyEntity::class,
-        PendingOutboundFrameEntity::class
+        PendingOutboundFrameEntity::class,
+        PrekeyEpochEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 @TypeConverters(AppDatabase.Converters::class)
@@ -37,6 +40,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun pendingActionDao(): PendingActionDao
     abstract fun pendingOutboundFrameDao(): PendingOutboundFrameDao
     abstract fun skippedMessageKeyDao(): SkippedMessageKeyDao
+    abstract fun prekeyEpochDao(): PrekeyEpochDao
 
     class Converters {
         @TypeConverter
@@ -66,12 +70,13 @@ abstract class AppDatabase : RoomDatabase() {
                         AppDatabase::class.java,
                         "voicedrop.db"
                     )
-                        .addMigrations(Migration_3_4)
+                        .addMigrations(Migration_3_4, Migration_4_5)
                         .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                         .build()
                         .also {
                             instance = it
                             startSkippedKeyExpirySweep(it)
+                            startPrekeyPreviousExpirySweep(it)
                         }
                 }
             }
@@ -94,6 +99,27 @@ abstract class AppDatabase : RoomDatabase() {
                     android.util.Log.w("AppDatabase", "skipped-key expiry sweep failed", t)
                 }
             }, "voicedrop-skipped-key-sweep").apply {
+                isDaemon = true
+                start()
+            }
+        }
+
+        /**
+         * §3.2 §6.7 — fire-and-forget 10-min expiry sweep on `prekey_epochs`
+         * status='previous' rows. Same daemon pattern as the dr9 skipped-key
+         * sweep above. Runs once per process; in-cycle wipes at §6.6 are the
+         * primary path. Failures are logged and swallowed.
+         */
+        private fun startPrekeyPreviousExpirySweep(db: AppDatabase) {
+            Thread({
+                try {
+                    kotlinx.coroutines.runBlocking {
+                        db.prekeyEpochDao().sweepExpiredPrevious(System.currentTimeMillis())
+                    }
+                } catch (t: Throwable) {
+                    android.util.Log.w("AppDatabase", "prekey previous-expiry sweep failed", t)
+                }
+            }, "voicedrop-prekey-previous-sweep").apply {
                 isDaemon = true
                 start()
             }

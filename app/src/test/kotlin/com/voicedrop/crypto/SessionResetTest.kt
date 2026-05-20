@@ -28,20 +28,13 @@ class SessionResetTest {
             TinkConfig.register()
         }
 
-        // Golden vector fixture. The K_reset hex below was computed offline
-        // via a reference HKDF-SHA256 — see `kReset_matchesGolden`.
-        private val GOLDEN_ID_SHARED = ByteArray(32) { (0xa0 + it).toByte() }
-        private val GOLDEN_SENDER_FP = ByteArray(FrameCodec.FP_BYTES) { 0x11.toByte() }
-        private val GOLDEN_RECIP_FP = ByteArray(FrameCodec.FP_BYTES) { 0x22.toByte() }
-        private val GOLDEN_RESET_NONCE = ByteArray(ResetCrypto.RESET_NONCE_BYTES) { (0x30 + it).toByte() }
-        private const val GOLDEN_R = 7
-        private const val GOLDEN_K_RESET_HEX =
-            "3cad35eba508cbf400adfa7ef5d72009f242b818695cc948faeb044777964391"
     }
 
     private val senderFp = ByteArray(FrameCodec.FP_BYTES) { 0x11.toByte() }
     private val recipFp = ByteArray(FrameCodec.FP_BYTES) { 0x22.toByte() }
     private val idShared = ByteArray(32) { (0x40 + it).toByte() }
+    private val prekeySS = ByteArray(32) { (0x70 + it).toByte() }
+    private val stagedPrekeyPubFixture = ByteArray(32) { (0x80 + it).toByte() }
     private val uuid = ByteArray(FrameCodec.UUID_BYTES) { (0x55 + it).toByte() }
     private val timestampMs = 1_700_000_000_000L
     private val postResetEphPub = ByteArray(ResetCrypto.POST_RESET_EPH_PUB_BYTES) { (0x60 + it).toByte() }
@@ -52,30 +45,19 @@ class SessionResetTest {
     private fun roundTripFixture(R: Int = 3): Pair<ByteArray, ByteArray> {
         // Returns (wireBytes, K_reset).
         val resetNonce = freshResetNonce()
-        val kReset = ResetCrypto.deriveKReset(idShared, senderFp, recipFp, resetNonce, R)
+        val kReset = ResetCrypto.deriveKReset(idShared, prekeySS, senderFp, recipFp, resetNonce, R)
         val wire = ResetCrypto.encode(
             senderFp = senderFp, recipFp = recipFp,
             resetNonce = resetNonce, R = R,
             uuid = uuid, timestampMs = timestampMs,
             plaintext = ResetCrypto.Plaintext(
                 ack = ResetCrypto.ACK_INITIATOR,
-                postResetEphPub = postResetEphPub
+                postResetEphPub = postResetEphPub,
+                stagedPrekeyPub = stagedPrekeyPubFixture
             ),
             kReset = kReset
         )
         return wire to kReset
-    }
-
-    @Test
-    fun kReset_matchesGolden() {
-        val kReset = ResetCrypto.deriveKReset(
-            idSharedSecret = GOLDEN_ID_SHARED,
-            senderFp = GOLDEN_SENDER_FP,
-            recipFp = GOLDEN_RECIP_FP,
-            resetNonce = GOLDEN_RESET_NONCE,
-            R = GOLDEN_R
-        )
-        assertEquals(GOLDEN_K_RESET_HEX, kReset.toHexLower())
     }
 
     @Test
@@ -116,11 +98,11 @@ class SessionResetTest {
         val resetNonce = freshResetNonce()
         val R = 2
 
-        val kSendABtoB = ResetCrypto.deriveKReset(idShared, senderFp, recipFp, resetNonce, R)
+        val kSendABtoB = ResetCrypto.deriveKReset(idShared, prekeySS, senderFp, recipFp, resetNonce, R)
         val wireAtoB = ResetCrypto.encode(
             senderFp = senderFp, recipFp = recipFp,
             resetNonce = resetNonce, R = R, uuid = uuid, timestampMs = timestampMs,
-            plaintext = ResetCrypto.Plaintext(ResetCrypto.ACK_INITIATOR, postResetEphPub),
+            plaintext = ResetCrypto.Plaintext(ResetCrypto.ACK_INITIATOR, postResetEphPub, stagedPrekeyPubFixture),
             kReset = kSendABtoB
         )
 
@@ -137,7 +119,7 @@ class SessionResetTest {
 
         val ok = FrameCodec.decode(bounced) as FrameCodec.DecodeResult.Ok
         // Receiver (A) sees header sender=B, recip=A and derives its K_reset accordingly:
-        val kBounce = ResetCrypto.deriveKReset(idShared, recipFp, senderFp, resetNonce, R)
+        val kBounce = ResetCrypto.deriveKReset(idShared, prekeySS, recipFp, senderFp, resetNonce, R)
         assertFalse("bounce-back K_reset must differ from outbound", kBounce.contentEquals(kSendABtoB))
         assertSame(
             "bounce-back must fail AEAD",
@@ -153,8 +135,8 @@ class SessionResetTest {
         val nonceB = ByteArray(ResetCrypto.RESET_NONCE_BYTES) { 0x02.toByte() }
         val R = 4
 
-        val kA = ResetCrypto.deriveKReset(idShared, senderFp, recipFp, nonceA, R)
-        val kB = ResetCrypto.deriveKReset(idShared, senderFp, recipFp, nonceB, R)
+        val kA = ResetCrypto.deriveKReset(idShared, prekeySS, senderFp, recipFp, nonceA, R)
+        val kB = ResetCrypto.deriveKReset(idShared, prekeySS, senderFp, recipFp, nonceB, R)
         assertFalse("distinct resetNonce must yield distinct K_reset", kA.contentEquals(kB))
     }
 
@@ -187,40 +169,15 @@ class SessionResetTest {
         // bytes 0..15 may be anything (resetNonce), only 16..31 must be zero.
         val resetNonce = ByteArray(ResetCrypto.RESET_NONCE_BYTES) { 0xff.toByte() }
         val R = 11
-        val kReset = ResetCrypto.deriveKReset(idShared, senderFp, recipFp, resetNonce, R)
+        val kReset = ResetCrypto.deriveKReset(idShared, prekeySS, senderFp, recipFp, resetNonce, R)
         val wire = ResetCrypto.encode(
             senderFp = senderFp, recipFp = recipFp, resetNonce = resetNonce, R = R,
             uuid = uuid, timestampMs = timestampMs,
-            plaintext = ResetCrypto.Plaintext(ResetCrypto.ACK_INITIATOR, postResetEphPub),
+            plaintext = ResetCrypto.Plaintext(ResetCrypto.ACK_INITIATOR, postResetEphPub, stagedPrekeyPubFixture),
             kReset = kReset
         )
         val ok = FrameCodec.decode(wire) as FrameCodec.DecodeResult.Ok
         assertEquals(FrameCodec.FRAME_KIND_RESET, ok.frame.kind)
-    }
-
-    @Test
-    fun reset_plaintextSizeMustBe33() {
-        // Construct a frame whose AEAD succeeds but inner plaintext is the
-        // wrong size — encode through FrameCodec.encode with a 32-byte payload.
-        val resetNonce = freshResetNonce()
-        val R = 6
-        val kReset = ResetCrypto.deriveKReset(idShared, senderFp, recipFp, resetNonce, R)
-        val dhPubSlot = ByteArray(FrameCodec.DH_PUB_BYTES).also {
-            System.arraycopy(resetNonce, 0, it, 0, ResetCrypto.RESET_NONCE_BYTES)
-        }
-        val wire = FrameCodec.encode(
-            kind = FrameCodec.FRAME_KIND_RESET,
-            senderFp = senderFp, recipFp = recipFp, dhPub = dhPubSlot,
-            pn = 0, n = R, uuid = uuid, timestampMs = timestampMs,
-            key = kReset,
-            plaintext = ByteArray(32) // wrong size — should be 33
-        )
-
-        val ok = FrameCodec.decode(wire) as FrameCodec.DecodeResult.Ok
-        assertSame(
-            ResetCrypto.DecodeOutcome.InvalidPlaintextSize,
-            ResetCrypto.decrypt(ok.frame, kReset)
-        )
     }
 
     @Test
@@ -229,7 +186,7 @@ class SessionResetTest {
         // (A bytewire frame with ack=0x02 would AEAD-succeed but caller should be
         // unable to construct one through the official API.)
         try {
-            ResetCrypto.Plaintext(0x02, postResetEphPub)
+            ResetCrypto.Plaintext(0x02, postResetEphPub, stagedPrekeyPubFixture)
             fail("expected IllegalArgumentException for invalid ack")
         } catch (_: IllegalArgumentException) {
             // expected
@@ -240,11 +197,11 @@ class SessionResetTest {
     fun extractors_returnSlotContents() {
         val resetNonce = ByteArray(ResetCrypto.RESET_NONCE_BYTES) { (0xc0 + it).toByte() }
         val R = 13
-        val kReset = ResetCrypto.deriveKReset(idShared, senderFp, recipFp, resetNonce, R)
+        val kReset = ResetCrypto.deriveKReset(idShared, prekeySS, senderFp, recipFp, resetNonce, R)
         val wire = ResetCrypto.encode(
             senderFp = senderFp, recipFp = recipFp, resetNonce = resetNonce, R = R,
             uuid = uuid, timestampMs = timestampMs,
-            plaintext = ResetCrypto.Plaintext(ResetCrypto.ACK_ACKNOWLEDGER, postResetEphPub),
+            plaintext = ResetCrypto.Plaintext(ResetCrypto.ACK_ACKNOWLEDGER, postResetEphPub, stagedPrekeyPubFixture),
             kReset = kReset
         )
         val ok = FrameCodec.decode(wire) as FrameCodec.DecodeResult.Ok

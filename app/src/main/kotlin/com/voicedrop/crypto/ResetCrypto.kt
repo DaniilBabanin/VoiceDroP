@@ -18,9 +18,10 @@ import javax.crypto.spec.SecretKeySpec
  *   - `pn`             = 0               ([FrameCodec] rejects non-zero)
  *   - `n`              = `R`             (new reset epoch — participates in AAD)
  *
- * Inner plaintext is 33 bytes: `ack:1 || postResetEphPub:32`. Plaintext sizes
- * other than 33 are dropped post-AEAD without state effect (caller checks
- * [DecodeOutcome.InvalidPlaintextSize]).
+ * Inner plaintext is 66 bytes: `version=0x02 || ack:1 || postResetEphPub:32 ||
+ * stagedPrekeyPub:32`. Sizes other than 66 OR a leading version byte ≠ 0x02
+ * are dropped post-AEAD without state effect (caller checks
+ * [DecodeOutcome.InvalidPlaintext]).
  *
  * `K_reset` is direction-bound (senderFp||recipFp in HKDF info) AND nonce-bound
  * (resetNonce in HKDF salt) so:
@@ -40,9 +41,12 @@ object ResetCrypto {
     const val RESET_NONCE_BYTES = 16
 
     const val POST_RESET_EPH_PUB_BYTES = 32
+    const val STAGED_PREKEY_PUB_BYTES = 32
 
-    /** `ack:1 || postResetEphPub:32`. */
-    const val PLAINTEXT_SIZE = 1 + POST_RESET_EPH_PUB_BYTES
+    /** §3.2 §4.1 — `version=0x02; ack:1; postResetEphPub:32; stagedPrekeyPub:32` = 66 B. */
+    const val PLAINTEXT_SIZE = 1 + 1 + POST_RESET_EPH_PUB_BYTES + STAGED_PREKEY_PUB_BYTES
+
+    const val PLAINTEXT_VERSION_V2: Byte = 0x02
 
     /** "I initiated this reset; you reset too." */
     const val ACK_INITIATOR: Byte = 0x00
@@ -51,43 +55,52 @@ object ResetCrypto {
     const val ACK_ACKNOWLEDGER: Byte = 0x01
 
     /** HKDF info purpose label per plan/08-dr/00-overview.md §3. */
-    private const val HKDF_PURPOSE = "voicedrop/reset/v1"
+    private const val HKDF_PURPOSE = "voicedrop/reset/v2"
 
     /**
-     * Derive `K_reset` per §6.2:
+     * §3.2 — Derive `K_reset` v2:
      *
      * ```
      * K_reset = HKDF(
      *   salt = resetNonce,
-     *   ikm  = idSharedSecret,
-     *   info = "voicedrop/reset/v1" || 0x00 || senderFp || recipFp || be32(R),
+     *   ikm  = idSharedSecret || prekeySS,
+     *   info = "voicedrop/reset/v2" || 0x00 || senderFp || recipFp || be32(R),
      *   L    = 32
      * )
      * ```
-     *
-     * Direction (senderFp / recipFp) is from the **sender's** point of view. The
-     * receiver flips them so a bounce-back replay against the original sender
-     * derives a different key — see `reset_directionBinding_bouncebackRejected`.
      */
     fun deriveKReset(
         idSharedSecret: ByteArray,
+        prekeySS: ByteArray,
         senderFp: ByteArray,
         recipFp: ByteArray,
         resetNonce: ByteArray,
         R: Int
     ): ByteArray {
         require(idSharedSecret.size == 32) { "idSharedSecret must be 32 bytes" }
+        require(prekeySS.size == 32) { "prekeySS must be 32 bytes" }
         require(senderFp.size == FrameCodec.FP_BYTES) { "senderFp must be ${FrameCodec.FP_BYTES} bytes" }
         require(recipFp.size == FrameCodec.FP_BYTES) { "recipFp must be ${FrameCodec.FP_BYTES} bytes" }
         require(resetNonce.size == RESET_NONCE_BYTES) { "resetNonce must be $RESET_NONCE_BYTES bytes" }
         require(R >= 0) { "R must be non-negative" }
 
         val info = buildInfo(senderFp, recipFp, R)
-        return hkdfSha256(salt = resetNonce, ikm = idSharedSecret, info = info, length = 32)
+        val ikm = ByteArray(idSharedSecret.size + prekeySS.size)
+        idSharedSecret.copyInto(ikm, 0)
+        prekeySS.copyInto(ikm, idSharedSecret.size)
+        try {
+            return hkdfSha256(salt = resetNonce, ikm = ikm, info = info, length = 32)
+        } finally {
+            ikm.fill(0)
+        }
     }
 
     /** Inner RESET plaintext. `postResetEphPub` is 32 zero bytes for Alice-role senders. */
-    class Plaintext(val ack: Byte, val postResetEphPub: ByteArray) {
+    class Plaintext(
+        val ack: Byte,
+        val postResetEphPub: ByteArray,
+        val stagedPrekeyPub: ByteArray
+    ) {
         init {
             require(ack == ACK_INITIATOR || ack == ACK_ACKNOWLEDGER) {
                 "ack must be 0x00 (initiator) or 0x01 (acknowledger)"
@@ -95,12 +108,17 @@ object ResetCrypto {
             require(postResetEphPub.size == POST_RESET_EPH_PUB_BYTES) {
                 "postResetEphPub must be $POST_RESET_EPH_PUB_BYTES bytes"
             }
+            require(stagedPrekeyPub.size == STAGED_PREKEY_PUB_BYTES) {
+                "stagedPrekeyPub must be $STAGED_PREKEY_PUB_BYTES bytes"
+            }
         }
 
         fun toBytes(): ByteArray {
             val out = ByteArray(PLAINTEXT_SIZE)
-            out[0] = ack
-            System.arraycopy(postResetEphPub, 0, out, 1, POST_RESET_EPH_PUB_BYTES)
+            out[0] = PLAINTEXT_VERSION_V2
+            out[1] = ack
+            System.arraycopy(postResetEphPub, 0, out, 2, POST_RESET_EPH_PUB_BYTES)
+            System.arraycopy(stagedPrekeyPub, 0, out, 2 + POST_RESET_EPH_PUB_BYTES, STAGED_PREKEY_PUB_BYTES)
             return out
         }
     }
@@ -148,8 +166,8 @@ object ResetCrypto {
         /** AEAD failed — wrong key, tamper, or direction-binding bounce-back. */
         object AeadFailure : DecodeOutcome()
 
-        /** AEAD succeeded but inner plaintext is not exactly [PLAINTEXT_SIZE] bytes (§6.1). */
-        object InvalidPlaintextSize : DecodeOutcome()
+        /** AEAD ok but plaintext is wrong size OR wrong version byte. */
+        object InvalidPlaintext : DecodeOutcome()
     }
 
     /**
@@ -159,8 +177,9 @@ object ResetCrypto {
      * frames).
      *
      * On AEAD failure returns [DecodeOutcome.AeadFailure] — caller drops the
-     * frame without state effect. On size mismatch returns
-     * [DecodeOutcome.InvalidPlaintextSize] — drop after AEAD success per §6.1.
+     * frame without state effect. On size mismatch or wrong version byte
+     * returns [DecodeOutcome.InvalidPlaintext] — drop after AEAD success per
+     * §6.1.
      */
     fun decrypt(frame: FrameCodec.DecodedFrame, kReset: ByteArray): DecodeOutcome {
         require(frame.kind == FrameCodec.FRAME_KIND_RESET) { "frame must be RESET kind" }
@@ -172,14 +191,17 @@ object ResetCrypto {
             return DecodeOutcome.AeadFailure
         }
 
-        if (pt.size != PLAINTEXT_SIZE) {
-            return DecodeOutcome.InvalidPlaintextSize
-        }
+        if (pt.size != PLAINTEXT_SIZE) return DecodeOutcome.InvalidPlaintext
+        if (pt[0] != PLAINTEXT_VERSION_V2) return DecodeOutcome.InvalidPlaintext
 
         return DecodeOutcome.Ok(
             Plaintext(
-                ack = pt[0],
-                postResetEphPub = pt.copyOfRange(1, PLAINTEXT_SIZE)
+                ack = pt[1],
+                postResetEphPub = pt.copyOfRange(2, 2 + POST_RESET_EPH_PUB_BYTES),
+                stagedPrekeyPub = pt.copyOfRange(
+                    2 + POST_RESET_EPH_PUB_BYTES,
+                    PLAINTEXT_SIZE
+                )
             )
         )
     }
@@ -204,7 +226,7 @@ object ResetCrypto {
     }
 
     private fun buildInfo(senderFp: ByteArray, recipFp: ByteArray, R: Int): ByteArray {
-        // "voicedrop/reset/v1" || 0x00 || senderFp[32] || recipFp[32] || be32(R)
+        // "voicedrop/reset/v2" || 0x00 || senderFp[32] || recipFp[32] || be32(R)
         val prefix = HKDF_PURPOSE.toByteArray(Charsets.UTF_8)
         val out = ByteArray(prefix.size + 1 + 32 + 32 + 4)
         var p = 0
