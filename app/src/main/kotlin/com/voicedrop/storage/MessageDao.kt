@@ -65,4 +65,10 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE contactId = :contactId")
     suspend fun getByContactList(contactId: String): List<MessageEntity>
+
+    @Query("SELECT COUNT(*) FROM messages WHERE encryptedFilePath = :path")
+    suspend fun countByEncryptedFilePath(path: String): Int
+
+    @Query("DELETE FROM messages WHERE uuid = :uuid")
+    suspend fun deleteByUuid(uuid: String): Int
 }
