@@ -42,7 +42,7 @@ class MultiRecipientSender(
      * recipient's frame UUID — all per-recipient rows reference that same path.
      *
      * [waveformPeaks] is the record-time downsampled peak array (from
-     * `PeakAccumulator.finalize()` — §D / Phase B). The same byte array is
+     * `PeakAccumulator.build()` — §D / Phase B). The same byte array is
      * persisted on every per-recipient `MessageEntity` row so the playback
      * waveform bar renders immediately without re-decoding the opus file.
      *

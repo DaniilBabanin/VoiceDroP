@@ -83,7 +83,7 @@ class AudioRecorder {
         ar.stop()
         ar.release()
         encoder.release()
-        RecordResult(opus = output.toByteArray(), peaks = peakAccumulator.finalize())
+        RecordResult(opus = output.toByteArray(), peaks = peakAccumulator.build())
     }
 
     private fun shortsToBytes(shorts: ShortArray, count: Int): ByteArray {

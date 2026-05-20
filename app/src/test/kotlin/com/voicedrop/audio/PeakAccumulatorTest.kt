@@ -18,7 +18,7 @@ class PeakAccumulatorTest {
         val silent = ShortArray(frameSize) // all zeros
         repeat(80) { acc.feed(silent, frameSize) }
 
-        val out = acc.finalize()
+        val out = acc.build()
         assertEquals(80, out.size)
         for ((i, b) in out.withIndex()) {
             assertEquals("bucket $i should be 0 for silent input", 0.toByte(), b)
@@ -31,7 +31,7 @@ class PeakAccumulatorTest {
         val saturated = ShortArray(frameSize) { Short.MAX_VALUE }
         repeat(80) { acc.feed(saturated, frameSize) }
 
-        val out = acc.finalize()
+        val out = acc.build()
         assertEquals(80, out.size)
         for ((i, b) in out.withIndex()) {
             // Short.MAX_VALUE / 32768f = 0.99997 → * 255 = 254.99 → 254. Allow 254–255.
@@ -44,13 +44,28 @@ class PeakAccumulatorTest {
     }
 
     @Test
+    fun minShortSamplesProduceMaxByte() {
+        // Locks in the `.toInt()` widening before `abs()` in feed(): without it,
+        // abs(Short.MIN_VALUE) would silently overflow back to Short.MIN_VALUE
+        // and the bucket would read as 0 instead of saturated.
+        val acc = PeakAccumulator()
+        val frame = ShortArray(frameSize) { Short.MIN_VALUE }
+        repeat(80) { acc.feed(frame, frame.size) }
+        val out = acc.build()
+        assertEquals(80, out.size)
+        for ((i, b) in out.withIndex()) {
+            assertEquals("bucket $i = ${b.toInt() and 0xff}", 0xff, b.toInt() and 0xff)
+        }
+    }
+
+    @Test
     fun shortInputPadsTrailingBucketsWithZero() {
         val acc = PeakAccumulator()
         val frame = ShortArray(frameSize) { Short.MAX_VALUE }
         // Only 10 frames — fewer than the default 80 buckets.
         repeat(10) { acc.feed(frame, frameSize) }
 
-        val out = acc.finalize()
+        val out = acc.build()
         assertEquals(80, out.size)
         // First 10 buckets carry the saturated peak.
         for (i in 0 until 10) {
@@ -73,7 +88,7 @@ class PeakAccumulatorTest {
             acc.feed(frame, frameSize)
         }
 
-        val out = acc.finalize()
+        val out = acc.build()
         assertEquals(80, out.size)
         var prev = -1
         for ((i, b) in out.withIndex()) {

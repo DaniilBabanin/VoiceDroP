@@ -298,8 +298,10 @@ class VoiceDropService : Service() {
 
             try {
                 audioRecorder.stopRecording()
-                val recordResult = recordingJob?.await()
-                    ?: AudioRecorder.RecordResult(ByteArray(0), ByteArray(0))
+                val recordResult = recordingJob?.await() ?: run {
+                    Log.w(TAG, "stopRecording: no recordingJob (start failed?) — nothing to send")
+                    return@launch
+                }
                 recordingJob = null
                 val opusBytes = recordResult.opus
                 val waveformPeaks = recordResult.peaks

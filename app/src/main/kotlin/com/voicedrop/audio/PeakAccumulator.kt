@@ -5,11 +5,12 @@ import kotlin.math.abs
 /**
  * Record-time peak-per-frame collector. Accumulates one normalized peak per
  * audio frame in memory, then downsamples to a fixed-size byte array on
- * [finalize] for storage in `MessageEntity.waveformPeaks` (see §D of the
+ * [build] for storage in `MessageEntity.waveformPeaks` (see §D of the
  * 2026-05 design refresh; produced in Phase B, consumed in Phase E).
  *
- * Pure: no Android imports so it's unit-testable. Memory cost is ~4 bytes per
- * frame × 50 fps × ~60s ≈ 12 KB peak — negligible for the recorder's lifetime.
+ * Pure: no Android imports so it's unit-testable. Memory scales linearly with
+ * recording length (4 B per frame × 50 fps ≈ 12 KB per minute). Bounded only
+ * by the caller's recording duration; this class imposes no cap.
  *
  * Output encoding: one unsigned byte per bucket spanning the recording, each
  * byte = `(peak * 255)` clamped 0..255 where `peak ∈ [0f, 1f]`.
@@ -39,7 +40,7 @@ class PeakAccumulator(private val targetBuckets: Int = 80) {
      * buckets are left at 0 (silent-tail padding) rather than stretched —
      * keeps short recordings honest about their length.
      */
-    fun finalize(): ByteArray {
+    fun build(): ByteArray {
         val out = ByteArray(targetBuckets)
         val n = framePeaks.size
         if (n == 0) return out
