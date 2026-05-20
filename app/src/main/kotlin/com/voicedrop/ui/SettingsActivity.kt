@@ -5,12 +5,12 @@ import android.os.Bundle
 import android.util.Log
 import android.view.MenuItem
 import android.widget.Button
-import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.SwitchCompat
 import androidx.appcompat.widget.Toolbar
+import com.google.android.material.materialswitch.MaterialSwitch
+import com.google.android.material.textfield.TextInputEditText
 import com.mikepenz.aboutlibraries.LibsBuilder
 import com.voicedrop.R
 import com.voicedrop.crypto.KeyManager
@@ -47,17 +47,16 @@ class SettingsActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("voicedrop_settings", MODE_PRIVATE)
         val keyManager = KeyManager(this)
 
-        val displayNameEdit = findViewById<EditText>(R.id.edit_display_name)
+        val displayNameEdit = findViewById<TextInputEditText>(R.id.edit_display_name)
         displayNameEdit.setText(prefs.getString("display_name", ""))
 
-        val signalingUrlEdit = findViewById<EditText>(R.id.edit_signaling_url)
+        val signalingUrlEdit = findViewById<TextInputEditText>(R.id.edit_signaling_url)
         signalingUrlEdit.setText(prefs.getString("signaling_url", ""))
 
         val fingerprintText = findViewById<TextView>(R.id.text_my_fingerprint)
-        val fp = keyManager.getFingerprint()
-        fingerprintText.text = fp.chunked(8).joinToString(" ")
+        fingerprintText.text = FingerprintFormat.format(keyManager.getFingerprint())
 
-        val relaySwitch = findViewById<SwitchCompat>(R.id.switch_relay_fallback)
+        val relaySwitch = findViewById<MaterialSwitch>(R.id.switch_relay_fallback)
         relaySwitch.isChecked = prefs.getBoolean(PREF_RELAY_FALLBACK_ENABLED, true)
         relaySwitch.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean(PREF_RELAY_FALLBACK_ENABLED, isChecked).apply()

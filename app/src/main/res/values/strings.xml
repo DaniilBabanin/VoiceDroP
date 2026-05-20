@@ -117,4 +117,9 @@
     <string name="verify_identity_button_mark">Mark as verified</string>
     <string name="verify_identity_button_clear">Clear verification</string>
     <string name="verify_identity_button_close">Close</string>
+
+    <!-- Settings section headers (v1.x visual refresh §E). -->
+    <string name="settings_section_identity">Identity</string>
+    <string name="settings_section_delivery">Delivery</string>
+    <string name="settings_section_about">About</string>
 </resources>
