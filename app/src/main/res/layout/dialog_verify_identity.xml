@@ -21,14 +21,14 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="@string/verify_identity_explainer"
-        android:textAppearance="?attr/textAppearanceBody1"
+        android:textAppearance="?attr/textAppearanceBodyLarge"
         android:layout_marginBottom="16dp"/>
 
     <TextView
         android:id="@+id/verify_dialog_status"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textAppearance="?attr/textAppearanceBody2"
+        android:textAppearance="?attr/textAppearanceBodyMedium"
         android:textStyle="bold"
         android:layout_marginBottom="8dp"/>
 
