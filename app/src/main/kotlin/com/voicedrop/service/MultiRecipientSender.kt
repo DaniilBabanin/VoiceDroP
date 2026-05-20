@@ -4,6 +4,7 @@ import com.voicedrop.crypto.MessagePayload
 import com.voicedrop.crypto.SentFrame
 import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.TransportType
+import kotlinx.coroutines.CancellationException
 import java.io.File
 import java.util.UUID
 
@@ -27,7 +28,6 @@ class MultiRecipientSender(
         plaintext: ByteArray,
         buildMessage: (frameUuidHex: String, frameUuidBytes: ByteArray, now: Long) -> MessageEntity?
     ) -> SentFrame,
-    private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
 
     data class SendResult(
@@ -93,6 +93,8 @@ class MultiRecipientSender(
                     )
                 }
                 successes.add(contactId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 failures.add(contactId)
             }

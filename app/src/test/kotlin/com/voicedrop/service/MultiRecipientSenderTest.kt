@@ -13,12 +13,10 @@ import org.junit.Before
 import org.junit.Test
 import java.io.File
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicInteger
 
 class MultiRecipientSenderTest {
 
     private lateinit var tmpDir: File
-    private val frameCounter = AtomicInteger(0)
 
     @Before
     fun setUp() {
@@ -64,7 +62,6 @@ class MultiRecipientSenderTest {
         val sender = MultiRecipientSender(
             messagesDir = tmpDir,
             encryptAndSend = fake::invoke,
-            clock = { 42L }
         )
 
         val opus = byteArrayOf(0x4f, 0x70, 0x75, 0x73)
@@ -110,7 +107,6 @@ class MultiRecipientSenderTest {
         val sender = MultiRecipientSender(
             messagesDir = tmpDir,
             encryptAndSend = fake::invoke,
-            clock = { 42L }
         )
 
         val result = sender.sendVoice(
@@ -137,7 +133,6 @@ class MultiRecipientSenderTest {
             encryptAndSend = { contactId, _, _ ->
                 throw AwaitingFirstReceive()
             },
-            clock = { 42L }
         )
 
         val result = sender.sendVoice(
@@ -159,7 +154,6 @@ class MultiRecipientSenderTest {
         val sender = MultiRecipientSender(
             messagesDir = tmpDir,
             encryptAndSend = fake::invoke,
-            clock = { 42L }
         )
 
         val result = sender.sendVoice(
