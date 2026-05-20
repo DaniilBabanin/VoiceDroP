@@ -51,8 +51,14 @@ class AllWidgetProvider : AppWidgetProvider() {
             widgetId: Int
         ) {
             val state = ServiceState.recordingState.value
+            // Only flip to "recording" when at least one of the currently-recording
+            // recipients is in the All-widget's active set. Without this guard a
+            // per-contact widget recording (for a contact NOT in the All-widget's
+            // set) would also flip the All-widget into stop-button mode and tapping
+            // it would prematurely stop that unrelated recording.
+            val widgetActiveIds = ActiveContactsPrefs.getActiveIds(context)
             val isRecording = state.state == ServiceState.State.RECORDING &&
-                state.activeContactIds.isNotEmpty()
+                state.activeContactIds.any { it in widgetActiveIds }
 
             if (isRecording) {
                 appWidgetManager.updateAppWidget(

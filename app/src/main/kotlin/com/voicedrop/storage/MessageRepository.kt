@@ -75,6 +75,24 @@ class MessageRepository(
         for (m in messages) deleteMessageWithBlobCleanup(m)
     }
 
+    /**
+     * Soft-delete a single message row (sets STATE_DELETED, nulls path) and,
+     * if no other row still references the same on-disk opus file, secure-wipe
+     * the file. Refcount-safe replacement for the bare `secureDelete(file)` +
+     * `markDeleted(uuid)` pair used by per-message deletes (notification swipe,
+     * scheduled auto-delete) — without this, a fanned-out blob shared by N
+     * recipients would be wiped on the first recipient's delete, breaking
+     * playback for the rest.
+     */
+    suspend fun markDeletedWithBlobRefcount(message: MessageEntity) {
+        val path = message.encryptedFilePath
+        messageDao.markDeleted(message.uuid)
+        if (path != null) {
+            val remaining = messageDao.countByEncryptedFilePath(path)
+            if (remaining == 0) secureDeleteFile(File(path))
+        }
+    }
+
     private fun secureDeleteFile(file: File) {
         if (!file.exists()) return
         try {
