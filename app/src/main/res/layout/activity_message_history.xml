@@ -27,15 +27,11 @@
         android:paddingBottom="8dp"
         app:layout_behavior="@string/appbar_scrolling_view_behavior"/>
 
-    <TextView
-        android:id="@+id/text_empty_messages"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center"
-        android:gravity="center"
-        android:padding="32dp"
-        android:text="@string/empty_messages"
-        android:textAppearance="?attr/textAppearanceBodyLarge"
+    <include
+        android:id="@+id/empty_state_messages"
+        layout="@layout/empty_state_messages"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
         android:visibility="gone"/>
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

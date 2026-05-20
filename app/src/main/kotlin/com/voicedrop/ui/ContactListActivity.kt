@@ -85,7 +85,7 @@ class ContactListActivity : AppCompatActivity() {
         recyclerView.adapter = adapter
         setupSwipeToDelete()
 
-        val emptyState = findViewById<TextView>(R.id.text_empty_state)
+        val emptyState = findViewById<View>(R.id.empty_state_contacts)
         val fab = findViewById<FloatingActionButton>(R.id.fab_add_contact)
         fab.setOnClickListener {
             if (isSignalingUrlConfigured()) {
@@ -94,6 +94,9 @@ class ContactListActivity : AppCompatActivity() {
                 showSignalingUrlRequiredDialog()
             }
         }
+        emptyState.findViewById<com.google.android.material.button.MaterialButton>(
+            R.id.button_empty_state_pair
+        ).setOnClickListener { fab.callOnClick() }
         EdgeToEdgeSetup.applyBottomInset(fab)
 
         checkOnboarding()

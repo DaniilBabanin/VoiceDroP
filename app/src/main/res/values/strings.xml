@@ -122,4 +122,11 @@
     <string name="settings_section_identity">Identity</string>
     <string name="settings_section_delivery">Delivery</string>
     <string name="settings_section_about">About</string>
+
+    <!-- Empty-state copy (v1.x visual refresh §F). -->
+    <string name="empty_contacts_title">No contacts yet</string>
+    <string name="empty_contacts_body">Pair with someone over QR to start sending end-to-end encrypted voice drops.</string>
+    <string name="empty_contacts_cta">Pair a contact</string>
+    <string name="empty_messages_title">No voice drops yet</string>
+    <string name="empty_messages_body">Record from the home-screen widget or the Quick Settings tile.</string>
 </resources>

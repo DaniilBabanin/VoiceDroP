@@ -5,7 +5,6 @@ import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
-import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import android.widget.Toast
@@ -77,7 +76,7 @@ class MessageHistoryActivity : AppCompatActivity() {
         recyclerView.adapter = adapter
         EdgeToEdgeSetup.applyBottomInset(recyclerView)
 
-        val emptyState = findViewById<TextView>(R.id.text_empty_messages)
+        val emptyState = findViewById<View>(R.id.empty_state_messages)
 
         val db = AppDatabase.getInstance(this)
         repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())
