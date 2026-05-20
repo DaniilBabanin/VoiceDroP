@@ -186,7 +186,23 @@ class MessageAdapter(
     companion object {
         private val DIFF_CALLBACK = object : DiffUtil.ItemCallback<MessageEntity>() {
             override fun areItemsTheSame(a: MessageEntity, b: MessageEntity) = a.uuid == b.uuid
-            override fun areContentsTheSame(a: MessageEntity, b: MessageEntity) = a == b
+
+            // MessageEntity.equals is uuid-only (ByteArray fields can't safely use
+            // data-class structural equality). Compare the fields that actually drive
+            // bind() here so DiffUtil still triggers a rebind when render-relevant
+            // state changes. Phase E will start consuming waveformPeaks in bind();
+            // include it now (via contentEquals) so the lazy backfill in Phase F
+            // produces a rebind.
+            override fun areContentsTheSame(a: MessageEntity, b: MessageEntity): Boolean =
+                a.direction == b.direction &&
+                    a.state == b.state &&
+                    a.transport == b.transport &&
+                    a.encryptedFilePath == b.encryptedFilePath &&
+                    a.durationMs == b.durationMs &&
+                    a.createdAt == b.createdAt &&
+                    a.transcription == b.transcription &&
+                    a.delivery_state == b.delivery_state &&
+                    (a.waveformPeaks?.contentEquals(b.waveformPeaks) ?: (b.waveformPeaks == null))
         }
     }
 }
