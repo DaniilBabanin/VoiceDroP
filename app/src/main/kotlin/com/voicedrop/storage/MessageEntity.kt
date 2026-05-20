@@ -32,7 +32,11 @@ data class MessageEntity(
     // DR3: sender-side ratchet delivery state. Receiver rows skip this entirely (always 0).
     // Transitions: 0 PENDING -> 1 DELIVERED on matching RECEIPT (dr11);
     //              0 PENDING -> 2 GAVE_UP on outbox give-up. Terminal once non-zero.
-    val delivery_state: Int = DELIVERY_PENDING
+    val delivery_state: Int = DELIVERY_PENDING,
+    // §D — cached waveform peaks for the playback bar. Lazily backfilled on first
+    // playback via MessageDao.updateWaveformPeaks; null until then. Compact byte
+    // encoding (one byte per peak); see WaveformPeaks for the codec.
+    val waveformPeaks: ByteArray? = null
 ) {
     companion object {
         const val DIRECTION_INBOUND = 0
