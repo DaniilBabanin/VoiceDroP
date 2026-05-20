@@ -69,6 +69,10 @@ class RePairWipe(
             "DELETE FROM pending_outbound_frames WHERE contact_id = ?",
             arrayOf<Any>(contactId)
         )
+        raw.execSQL(
+            "DELETE FROM prekey_epochs WHERE contact_id = ?",
+            arrayOf<Any>(contactId)
+        )
 
         // Clear every ratchet / reset / counter column; reset RK to the
         // DR3 pre-bootstrap sentinel (empty ByteArray). pending_repair=1 surfaces
