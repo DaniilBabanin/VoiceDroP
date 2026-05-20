@@ -15,7 +15,7 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.Toolbar
+import com.google.android.material.appbar.MaterialToolbar
 import androidx.core.content.FileProvider
 import androidx.room.withTransaction
 import androidx.viewpager2.widget.ViewPager2
@@ -163,7 +163,7 @@ class QrPairActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_qr_pair)
 
-        val toolbar = findViewById<Toolbar>(R.id.toolbar)
+        val toolbar = findViewById<MaterialToolbar>(R.id.toolbar)
         setSupportActionBar(toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 

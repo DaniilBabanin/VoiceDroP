@@ -49,7 +49,7 @@ class MessageHistoryActivity : AppCompatActivity() {
         contactId = intent.getStringExtra(EXTRA_CONTACT_ID) ?: run { finish(); return }
         val contactName = intent.getStringExtra(EXTRA_CONTACT_NAME) ?: contactId
 
-        val toolbar = findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar)
+        val toolbar = findViewById<com.google.android.material.appbar.MaterialToolbar>(R.id.toolbar)
         setSupportActionBar(toolbar)
         supportActionBar?.title = contactName
         supportActionBar?.setDisplayHomeAsUpEnabled(true)

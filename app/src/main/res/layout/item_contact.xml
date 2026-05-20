@@ -20,10 +20,10 @@
 
     <ImageView
         android:id="@+id/icon_unread"
-        android:layout_width="12dp"
-        android:layout_height="12dp"
+        android:layout_width="6dp"
+        android:layout_height="6dp"
         android:layout_marginStart="8dp"
-        android:src="@drawable/ic_tile_recording"
+        android:src="@drawable/unread_dot"
         android:contentDescription="@null"
         android:visibility="gone"/>
 

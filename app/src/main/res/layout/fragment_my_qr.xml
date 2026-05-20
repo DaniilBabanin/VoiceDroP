@@ -20,8 +20,8 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
         android:fontFamily="monospace"
-        android:textAppearance="?attr/textAppearanceLabelSmall"
-        android:textSize="10sp"/>
+        android:textAppearance="?attr/textAppearanceBodyMedium"
+        android:textSize="12sp"/>
 
     <Button
         android:id="@+id/button_share_file"

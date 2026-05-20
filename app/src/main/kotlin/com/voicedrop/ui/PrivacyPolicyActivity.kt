@@ -10,7 +10,7 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.Toolbar
+import com.google.android.material.appbar.MaterialToolbar
 import com.voicedrop.R
 import io.noties.markwon.Markwon
 import io.noties.markwon.ext.tables.TablePlugin
@@ -22,7 +22,7 @@ class PrivacyPolicyActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_privacy_policy)
 
-        val toolbar = findViewById<Toolbar>(R.id.toolbar)
+        val toolbar = findViewById<MaterialToolbar>(R.id.toolbar)
         setSupportActionBar(toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 

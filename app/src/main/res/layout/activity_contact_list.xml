@@ -11,7 +11,7 @@
         android:layout_height="wrap_content"
         android:fitsSystemWindows="true">
 
-        <androidx.appcompat.widget.Toolbar
+        <com.google.android.material.appbar.MaterialToolbar
             android:id="@+id/toolbar"
             android:layout_width="match_parent"
             android:layout_height="?attr/actionBarSize"
@@ -22,8 +22,8 @@
             android:id="@+id/banner_aead_soft_prompt"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="#FFB300"
-            android:textColor="#000000"
+            android:background="?attr/colorWarningContainer"
+            android:textColor="?attr/colorOnWarningContainer"
             android:padding="12dp"
             android:gravity="center_vertical"
             android:visibility="gone"
@@ -51,6 +51,8 @@
         android:layout_gravity="bottom|end"
         android:layout_margin="16dp"
         android:contentDescription="@string/add_contact"
+        app:backgroundTint="?attr/colorTertiary"
+        app:tint="?attr/colorOnTertiary"
         app:srcCompat="@android:drawable/ic_input_add"/>
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

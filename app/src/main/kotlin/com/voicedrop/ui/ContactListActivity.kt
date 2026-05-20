@@ -66,7 +66,7 @@ class ContactListActivity : AppCompatActivity() {
             startForegroundService(Intent(this, VoiceDropService::class.java))
         }
 
-        val toolbar = findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar)
+        val toolbar = findViewById<com.google.android.material.appbar.MaterialToolbar>(R.id.toolbar)
         setSupportActionBar(toolbar)
 
         adapter = ContactAdapter { contactId ->

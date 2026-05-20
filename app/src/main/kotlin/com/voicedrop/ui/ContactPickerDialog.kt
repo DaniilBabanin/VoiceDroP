@@ -1,17 +1,13 @@
 package com.voicedrop.ui
 
-import android.app.Dialog
 import android.content.Context
-import android.graphics.Color
-import android.os.Bundle
-import android.view.ContextThemeWrapper
+import android.graphics.Typeface
 import android.view.View
 import android.view.ViewGroup
-import android.view.Window
-import android.view.WindowManager
 import android.widget.ArrayAdapter
-import android.widget.ListView
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.voicedrop.R
 import com.voicedrop.storage.ContactEntity
 
@@ -22,32 +18,25 @@ import com.voicedrop.storage.ContactEntity
  * Per dr17.5 §"Bob's can't-send-first UX" the row is silently disabled in the
  * picker — no caption, no banner. In normal pairing Alice's auto-HELLO arrives
  * in <1s and the disabled state lifts before the user notices.
+ *
+ * v1.x visual refresh — wraps MaterialAlertDialogBuilder. The custom ArrayAdapter
+ * preserves the visual-disabled treatment that setItems() can't express.
  */
-class ContactPickerDialog(
-    context: Context,
-    private val contacts: List<ContactEntity>,
-    private val onContactSelected: (String) -> Unit
-) : Dialog(ContextThemeWrapper(context, R.style.Theme_VoiceDrop)) {
+object ContactPickerDialog {
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        requestWindowFeature(Window.FEATURE_NO_TITLE)
-        setContentView(R.layout.dialog_contact_picker)
-
-        window?.addFlags(
-            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-            WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
-        )
-
-        val listView = findViewById<ListView>(R.id.contact_list)
+    /** Returns a configured AlertDialog. Caller is responsible for show()/dismiss(). */
+    operator fun invoke(
+        context: Context,
+        contacts: List<ContactEntity>,
+        onContactSelected: (String) -> Unit
+    ): AlertDialog {
         if (contacts.isEmpty()) {
-            val adapter = ArrayAdapter(
-                context,
-                android.R.layout.simple_list_item_1,
-                listOf("No contacts — tap to pair")
-            )
-            listView.adapter = adapter
-            return
+            return MaterialAlertDialogBuilder(context)
+                .setTitle(R.string.select_contact)
+                .setMessage(R.string.widget_empty_hint)
+                .setPositiveButton(android.R.string.ok, null)
+                .create()
+                .applyShowWhenLocked()
         }
 
         val adapter = object : ArrayAdapter<ContactEntity>(
@@ -57,30 +46,38 @@ class ContactPickerDialog(
         ) {
             override fun isEnabled(position: Int): Boolean =
                 contacts[position].dhr_pub != null
-
             override fun areAllItemsEnabled(): Boolean =
                 contacts.all { it.dhr_pub != null }
-
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val view = super.getView(position, convertView, parent)
                 val text1 = view.findViewById<TextView>(android.R.id.text1)
                 text1.text = contacts[position].name
-                if (contacts[position].dhr_pub == null) {
-                    // Grey out: setEnabled also covers the alpha state on most themes.
-                    view.isEnabled = false
-                    text1.isEnabled = false
-                    text1.setTextColor(Color.GRAY)
-                } else {
-                    view.isEnabled = true
-                    text1.isEnabled = true
-                }
+                text1.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+                val enabled = contacts[position].dhr_pub != null
+                view.isEnabled = enabled
+                text1.isEnabled = enabled
+                text1.alpha = if (enabled) 1.0f else 0.4f
                 return view
             }
         }
-        listView.adapter = adapter
-        listView.setOnItemClickListener { _, _, position, _ ->
-            onContactSelected(contacts[position].id)
-            dismiss()
-        }
+
+        return MaterialAlertDialogBuilder(context)
+            .setTitle(R.string.select_contact)
+            .setAdapter(adapter) { dialog, which ->
+                if (contacts[which].dhr_pub != null) {
+                    onContactSelected(contacts[which].id)
+                }
+                dialog.dismiss()
+            }
+            .create()
+            .applyShowWhenLocked()
+    }
+
+    private fun AlertDialog.applyShowWhenLocked(): AlertDialog {
+        window?.addFlags(
+            android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+            android.view.WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+        )
+        return this
     }
 }

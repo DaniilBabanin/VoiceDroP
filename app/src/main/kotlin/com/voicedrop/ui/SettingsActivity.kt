@@ -8,7 +8,7 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.Toolbar
+import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.textfield.TextInputEditText
 import com.mikepenz.aboutlibraries.LibsBuilder
@@ -36,7 +36,7 @@ class SettingsActivity : AppCompatActivity() {
             finish(); return
         }
 
-        val toolbar = findViewById<Toolbar>(R.id.toolbar)
+        val toolbar = findViewById<MaterialToolbar>(R.id.toolbar)
         setSupportActionBar(toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
