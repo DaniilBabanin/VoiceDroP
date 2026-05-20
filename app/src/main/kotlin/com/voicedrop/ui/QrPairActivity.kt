@@ -34,7 +34,6 @@ import com.voicedrop.crypto.RatchetState
 import com.voicedrop.crypto.RatchetStatePersistence
 import com.voicedrop.crypto.RePairWipe
 import com.voicedrop.service.VoiceDropService
-import com.voicedrop.storage.ActiveContactsPrefs
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.ContactEntity
 import com.voicedrop.storage.MessageRepository
@@ -583,10 +582,6 @@ class QrPairActivity : AppCompatActivity() {
         }
         myPrekey.priv.fill(0)
         prekeyRetired = true
-
-        if (ActiveContactsPrefs.getDefaultId(this) == null) {
-            ActiveContactsPrefs.setDefaultId(this, contact.id)
-        }
 
         // DR17.5 §"Auto-bootstrap HELLO" — Alice (lexicographically-lower fp) fires
         // one HELLO frame so Bob's ratchet learns Alice's `dhr_pub` from the DATA

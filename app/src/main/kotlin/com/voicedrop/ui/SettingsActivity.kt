@@ -15,15 +15,10 @@ import com.mikepenz.aboutlibraries.LibsBuilder
 import com.voicedrop.R
 import com.voicedrop.crypto.KeyManager
 import com.voicedrop.service.VoiceDropService
-import com.voicedrop.storage.ActiveContactsPrefs
-import com.voicedrop.storage.AppDatabase
-import com.voicedrop.storage.ContactEntity
-import com.voicedrop.storage.MessageRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class SettingsActivity : AppCompatActivity() {
@@ -81,28 +76,6 @@ class SettingsActivity : AppCompatActivity() {
             })
         }
 
-        val defaultRecipientButton = findViewById<Button>(R.id.button_default_recipient)
-        val db = AppDatabase.getInstance(this)
-        val repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())
-
-        fun refreshDefaultRecipientLabel() {
-            scope.launch {
-                val contacts = repository.getAllContacts().first()
-                defaultRecipientButton.text = labelForDefaultRecipient(contacts)
-            }
-        }
-        refreshDefaultRecipientLabel()
-
-        defaultRecipientButton.setOnClickListener {
-            scope.launch {
-                val contacts = repository.getAllContacts().first()
-                ContactPickerDialog(this@SettingsActivity, contacts) { pickedId ->
-                    ActiveContactsPrefs.setDefaultId(this@SettingsActivity, pickedId)
-                    refreshDefaultRecipientLabel()
-                }.show()
-            }
-        }
-
         findViewById<Button>(R.id.button_privacy_policy).setOnClickListener {
             startActivity(Intent(this, PrivacyPolicyActivity::class.java))
         }
@@ -153,12 +126,6 @@ class SettingsActivity : AppCompatActivity() {
             return true
         }
         return super.onOptionsItemSelected(item)
-    }
-
-    private fun labelForDefaultRecipient(contacts: List<ContactEntity>): String {
-        if (contacts.isEmpty()) return getString(R.string.default_recipient_no_contacts)
-        val explicit = ActiveContactsPrefs.getDefault(this, contacts)
-        return explicit?.name ?: getString(R.string.default_recipient_none)
     }
 
     override fun onDestroy() {

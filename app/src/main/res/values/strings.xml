@@ -21,10 +21,6 @@
     <string name="save">Save</string>
     <string name="test_connection">Test Connection</string>
     <string name="my_fingerprint_label">My Fingerprint</string>
-    <string name="default_recipient_label">Default recipient</string>
-    <string name="default_recipient_description">The contact that the Quick Settings tile and lock-screen path record to. Place a home-screen widget for any contact to bypass the default.</string>
-    <string name="default_recipient_none">None — using newest contact</string>
-    <string name="default_recipient_no_contacts">No contacts paired</string>
     <string name="relay_fallback_label">Allow server relay fallback</string>
     <string name="relay_fallback_description">When direct connections (LAN or P2P) fail, deliver encrypted voice messages via the signaling server\'s temporary relay. The server never sees decryption keys. Turn off for direct-only mode — messages to offline peers will queue locally until they reconnect.</string>
     <string name="select_contact">Select Contact</string>
@@ -93,6 +89,7 @@
     <string name="widget_unbound">Tap to set</string>
     <string name="widget_loading">…</string>
     <string name="widget_contact_missing">?</string>
+    <string name="widget_all_label">All</string>
     <string name="contact_active_checkbox_description">Use this contact for the quick tile</string>
 
     <!-- DR17.5 W6 — AEAD-fail soft prompt banner (dr14 §6.4). Shown when consecutive
