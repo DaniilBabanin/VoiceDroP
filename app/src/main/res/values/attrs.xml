@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Custom semantic colors. M3 has no built-in 'warning' role; we add ours for
+         the AEAD-failure banner. See plan/11-visual-refresh.md §A. -->
+    <attr name="colorWarningContainer" format="color"/>
+    <attr name="colorOnWarningContainer" format="color"/>
+</resources>

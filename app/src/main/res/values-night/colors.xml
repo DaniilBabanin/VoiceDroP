@@ -1,4 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- M3 dark palette — Option B "deep teal-tinted." See plan/11-visual-refresh.md §A. -->
+    <color name="md_primary">#5DDFD3</color>
+    <color name="md_on_primary">#003738</color>
+    <color name="md_primary_container">#006666</color>
+    <color name="md_on_primary_container">#DEFAF7</color>
+    <color name="md_secondary">#B1CCCB</color>
+    <color name="md_on_secondary">#1C3535</color>
+    <color name="md_secondary_container">#324B4B</color>
+    <color name="md_on_secondary_container">#CCE8E7</color>
+    <color name="md_tertiary">#00D9FF</color>
+    <color name="md_on_tertiary">#001F26</color>
+    <color name="md_surface">#0B1414</color>
+    <color name="md_surface_variant">#16282B</color>
+    <color name="md_on_surface">#E5F2F2</color>
+    <color name="md_on_surface_variant">#7C9494</color>
+    <color name="md_outline">#1F3437</color>
+    <color name="md_error">#FFB4AB</color>
+    <color name="md_error_container">#93000A</color>
+
+    <color name="md_warning_container">#5D4200</color>
+    <color name="md_on_warning_container">#FFE082</color>
+
+    <!-- Legacy divider override kept transitionally. -->
     <color name="color_divider">#1FFFFFFF</color>
 </resources>

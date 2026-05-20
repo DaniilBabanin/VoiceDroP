@@ -1,12 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="teal_200">#FF03DAC5</color>
-    <color name="teal_500">#FF006A6A</color>
-    <color name="teal_700">#FF018786</color>
-    <color name="teal_900">#FF003D3D</color>
-    <color name="accent_cyan">#FF00D9FF</color>
-    <color name="black">#FF000000</color>
-    <color name="white">#FFFFFFFF</color>
+    <!-- M3 light palette — pinned brand teal/cyan. See plan/11-visual-refresh.md §A. -->
+    <color name="md_primary">#006A6A</color>
+    <color name="md_on_primary">#FFFFFF</color>
+    <color name="md_primary_container">#9FF1EC</color>
+    <color name="md_on_primary_container">#002020</color>
+    <color name="md_secondary">#4A6363</color>
+    <color name="md_on_secondary">#FFFFFF</color>
+    <color name="md_secondary_container">#CCE8E7</color>
+    <color name="md_on_secondary_container">#051F1F</color>
+    <color name="md_tertiary">#00D9FF</color>
+    <color name="md_on_tertiary">#001F26</color>
+    <color name="md_surface">#FAFDFC</color>
+    <color name="md_surface_variant">#DAE5E4</color>
+    <color name="md_on_surface">#191C1C</color>
+    <color name="md_on_surface_variant">#3F4948</color>
+    <color name="md_outline">#6F7979</color>
+    <color name="md_error">#BA1A1A</color>
+    <color name="md_error_container">#FFDAD6</color>
+
+    <!-- Custom AEAD-banner warning tokens (M3 spec doesn't define a 'warning' role). -->
+    <color name="md_warning_container">#FFE082</color>
+    <color name="md_on_warning_container">#3D2A00</color>
+
+    <!-- Stateful colors — semantic, theme-independent. -->
     <color name="red_recording">#FFE53935</color>
+
+    <!-- Legacy color_divider kept transitionally; layouts will switch to ?attr/colorOutlineVariant. -->
     <color name="color_divider">#1F000000</color>
+
+    <!-- Legacy aliases kept for launcher mipmaps + widget XML that reference them directly. -->
+    <color name="teal_500">#FF006A6A</color>
+    <color name="accent_cyan">#FF00D9FF</color>
+    <color name="white">#FFFFFFFF</color>
 </resources>
