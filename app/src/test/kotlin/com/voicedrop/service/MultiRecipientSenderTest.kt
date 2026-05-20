@@ -69,7 +69,8 @@ class MultiRecipientSenderTest {
             recipientIds = listOf("c1", "c2", "c3"),
             opusBytes = opus,
             durationMs = 1500,
-            deleteAfterMsByContact = mapOf("c1" to 10_000L, "c2" to 20_000L, "c3" to 30_000L)
+            deleteAfterMsByContact = mapOf("c1" to 10_000L, "c2" to 20_000L, "c3" to 30_000L),
+            waveformPeaks = ByteArray(80),
         )
 
         assertEquals(3, fake.calls.size)
@@ -113,7 +114,8 @@ class MultiRecipientSenderTest {
             recipientIds = listOf("c1", "c2", "c3"),
             opusBytes = byteArrayOf(1, 2, 3),
             durationMs = 500,
-            deleteAfterMsByContact = mapOf("c1" to 0L, "c2" to 0L, "c3" to 0L)
+            deleteAfterMsByContact = mapOf("c1" to 0L, "c2" to 0L, "c3" to 0L),
+            waveformPeaks = ByteArray(80),
         )
 
         // c2 was attempted but threw — we still attempt c3.
@@ -139,7 +141,8 @@ class MultiRecipientSenderTest {
             recipientIds = listOf("c1", "c2"),
             opusBytes = byteArrayOf(9, 9, 9),
             durationMs = 100,
-            deleteAfterMsByContact = mapOf("c1" to 0L, "c2" to 0L)
+            deleteAfterMsByContact = mapOf("c1" to 0L, "c2" to 0L),
+            waveformPeaks = ByteArray(80),
         )
 
         assertTrue(result.successfulRecipientIds.isEmpty())
@@ -160,7 +163,8 @@ class MultiRecipientSenderTest {
             recipientIds = emptyList(),
             opusBytes = byteArrayOf(1),
             durationMs = 1,
-            deleteAfterMsByContact = emptyMap()
+            deleteAfterMsByContact = emptyMap(),
+            waveformPeaks = ByteArray(80),
         )
 
         assertTrue(result.successfulRecipientIds.isEmpty())

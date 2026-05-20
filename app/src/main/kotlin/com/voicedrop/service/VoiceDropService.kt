@@ -70,7 +70,7 @@ class VoiceDropService : Service() {
     private var recordingContactIds: List<String> = emptyList()
     private var recordStartTime: Long = 0L
     private var recordStartElapsedRealtime: Long = 0L
-    private var recordingJob: Deferred<ByteArray>? = null
+    private var recordingJob: Deferred<AudioRecorder.RecordResult>? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var playbackJob: Job? = null
 
@@ -298,8 +298,11 @@ class VoiceDropService : Service() {
 
             try {
                 audioRecorder.stopRecording()
-                val opusBytes = recordingJob?.await() ?: ByteArray(0)
+                val recordResult = recordingJob?.await()
+                    ?: AudioRecorder.RecordResult(ByteArray(0), ByteArray(0))
                 recordingJob = null
+                val opusBytes = recordResult.opus
+                val waveformPeaks = recordResult.peaks
                 val durationMs = (System.currentTimeMillis() - recordStartTime).toInt()
 
                 // Per-contact auto-delete window: each recipient's row honors that
@@ -326,6 +329,7 @@ class VoiceDropService : Service() {
                     opusBytes = opusBytes,
                     durationMs = durationMs,
                     deleteAfterMsByContact = deleteAfterMsByContact,
+                    waveformPeaks = waveformPeaks,
                 )
 
                 if (result.failedRecipientIds.isNotEmpty() && result.successfulRecipientIds.isEmpty()) {

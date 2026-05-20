@@ -41,6 +41,11 @@ class MultiRecipientSender(
      * derived from a fresh UUID so the file is decoupled from any single
      * recipient's frame UUID — all per-recipient rows reference that same path.
      *
+     * [waveformPeaks] is the record-time downsampled peak array (from
+     * `PeakAccumulator.finalize()` — §D / Phase B). The same byte array is
+     * persisted on every per-recipient `MessageEntity` row so the playback
+     * waveform bar renders immediately without re-decoding the opus file.
+     *
      * Returns a partition of recipients into success/failure lists, preserving
      * input order within each list.
      */
@@ -49,6 +54,7 @@ class MultiRecipientSender(
         opusBytes: ByteArray,
         durationMs: Int,
         deleteAfterMsByContact: Map<String, Long>,
+        waveformPeaks: ByteArray,
     ): SendResult {
         if (recipientIds.isEmpty()) {
             return SendResult(emptyList(), emptyList())
@@ -89,7 +95,8 @@ class MultiRecipientSender(
                         createdAt = now,
                         sentAt = now,
                         deliveredAt = 0L,
-                        delivery_state = MessageEntity.DELIVERY_PENDING
+                        delivery_state = MessageEntity.DELIVERY_PENDING,
+                        waveformPeaks = waveformPeaks,
                     )
                 }
                 successes.add(contactId)
