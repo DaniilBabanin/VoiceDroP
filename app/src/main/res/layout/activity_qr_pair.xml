@@ -11,7 +11,8 @@
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        app:title="@string/pair_contact"/>
+        app:title="@string/pair_contact"
+        app:titleTextAppearance="@style/TextAppearance.VoiceDrop.Wordmark"/>
 
     <com.google.android.material.tabs.TabLayout
         android:id="@+id/tab_layout"

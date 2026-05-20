@@ -11,7 +11,8 @@
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        app:title="@string/privacy_policy"/>
+        app:title="@string/privacy_policy"
+        app:titleTextAppearance="@style/TextAppearance.VoiceDrop.Wordmark"/>
 
     <ScrollView
         android:layout_width="match_parent"

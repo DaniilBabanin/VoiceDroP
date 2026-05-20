@@ -25,6 +25,10 @@
         <item name="colorWarningContainer">@color/md_warning_container</item>
         <item name="colorOnWarningContainer">@color/md_on_warning_container</item>
 
+        <!-- Manrope is the default font family for every default-styled view. -->
+        <item name="android:fontFamily">@font/manrope</item>
+        <item name="fontFamily">@font/manrope</item>
+
         <!-- Phase C removes this opt-out. Kept here so commit 1 is independently sane
              (no edge-to-edge insets handler yet). -->
         <item name="android:windowOptOutEdgeToEdgeEnforcement" tools:targetApi="35">true</item>
@@ -35,6 +39,26 @@
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:backgroundDimEnabled">false</item>
+    </style>
+
+    <!-- Toolbar title — slightly tighter and heavier than M3 default. -->
+    <style name="TextAppearance.VoiceDrop.Wordmark" parent="TextAppearance.Material3.TitleLarge">
+        <item name="android:fontFamily">@font/manrope</item>
+        <item name="fontFamily">@font/manrope</item>
+        <item name="android:textSize">20sp</item>
+        <item name="android:letterSpacing">-0.015</item>
+        <item name="android:textFontWeight">600</item>
+    </style>
+
+    <!-- Settings section header — uppercase, tracked, tertiary-colored. -->
+    <style name="TextAppearance.VoiceDrop.SectionLabel" parent="TextAppearance.Material3.LabelMedium">
+        <item name="android:fontFamily">@font/manrope</item>
+        <item name="fontFamily">@font/manrope</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:letterSpacing">0.08</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:textFontWeight">600</item>
+        <item name="android:textColor">?attr/colorTertiary</item>
     </style>
 
 </resources>
