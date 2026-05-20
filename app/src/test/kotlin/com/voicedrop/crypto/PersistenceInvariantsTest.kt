@@ -497,8 +497,11 @@ class PersistenceInvariantsTest {
         val nonceB = ByteArray(16) { (0x80 + it).toByte() }
         val R = 1
 
-        val rkA = Bootstrap.deriveResetRootKey(idShared, R, nonceA)
-        val rkB = Bootstrap.deriveResetRootKey(idShared, R, nonceB)
+        // Synthetic prekeySS — value doesn't matter for this nonce-divergence test,
+        // only that both sides agree (mirrors how idShared is treated above).
+        val prekeySS = ByteArray(32) { (0x55 + it).toByte() }
+        val rkA = Bootstrap.deriveResetRootKey(idShared, prekeySS, R, nonceA)
+        val rkB = Bootstrap.deriveResetRootKey(idShared, prekeySS, R, nonceB)
         assertFalse(
             "deriveResetRootKey must surface nonce differences in RK_0",
             rkA.contentEquals(rkB)
@@ -553,8 +556,9 @@ class PersistenceInvariantsTest {
         val aliceManualNonce = ByteArray(16) { (0x20 + it).toByte() }
         val bobAutoNonce = ByteArray(16) { (0x90 + it).toByte() }
 
-        val rkA = Bootstrap.deriveResetRootKey(idShared, R, aliceManualNonce)
-        val rkB = Bootstrap.deriveResetRootKey(idShared, R, bobAutoNonce)
+        val prekeySS = ByteArray(32) { (0x55 + it).toByte() }
+        val rkA = Bootstrap.deriveResetRootKey(idShared, prekeySS, R, aliceManualNonce)
+        val rkB = Bootstrap.deriveResetRootKey(idShared, prekeySS, R, bobAutoNonce)
         assertFalse(rkA.contentEquals(rkB))
 
         // Both sides synthetically bootstrap to the same R via different
@@ -631,8 +635,9 @@ class PersistenceInvariantsTest {
         // persist the post-init state directly via `installPostInitState`.
         val aliceNonce = ByteArray(16) { (0x11 + it).toByte() }
         val bobNonce = ByteArray(16) { (0x77 + it).toByte() }
-        val rkAlice = Bootstrap.deriveResetRootKey(idShared, 1, aliceNonce)
-        val rkBob = Bootstrap.deriveResetRootKey(idShared, 1, bobNonce)
+        val prekeySS = ByteArray(32) { (0x55 + it).toByte() }
+        val rkAlice = Bootstrap.deriveResetRootKey(idShared, prekeySS, 1, aliceNonce)
+        val rkBob = Bootstrap.deriveResetRootKey(idShared, prekeySS, 1, bobNonce)
         assertFalse("RK_0 must differ across distinct nonces at same R",
             rkAlice.contentEquals(rkBob))
 
@@ -787,11 +792,18 @@ class PersistenceInvariantsTest {
         r: Int,
         postResetEphPub: ByteArray
     ): FrameCodec.DecodedFrame {
+        // Synthetic prekeySS / stagedPrekeyPub — this test exercises the convergence-
+        // decision branch reached BEFORE the receive path consults its prekey rows, so
+        // both fields are irrelevant to the property under test (mirrors the §3.2 fixture
+        // pattern in Pcs_E2eTest where the in-test prekey material doesn't have to round-
+        // trip with the persisted rows).
+        val prekeySS = ByteArray(32) { (0x55 + it).toByte() }
         val plaintext = ResetCrypto.Plaintext(
             ack = ResetCrypto.ACK_INITIATOR,
-            postResetEphPub = postResetEphPub.copyOf()
+            postResetEphPub = postResetEphPub.copyOf(),
+            stagedPrekeyPub = ByteArray(32) { (0x66 + it).toByte() }
         )
-        val kReset = ResetCrypto.deriveKReset(idShared, senderFp, recipFp, resetNonce, r)
+        val kReset = ResetCrypto.deriveKReset(idShared, prekeySS, senderFp, recipFp, resetNonce, r)
         try {
             val frameUuid = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
             val wireBytes = ResetCrypto.encode(

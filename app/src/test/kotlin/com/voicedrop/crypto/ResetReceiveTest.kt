@@ -575,7 +575,11 @@ class ResetReceiveTest {
         postResetEphPub: ByteArray
     ): FrameCodec.DecodedFrame {
         // K_reset from peer's POV: sender=peer, recip=us, R=rIn, nonce=resetNonce.
-        val kReset = ResetCrypto.deriveKReset(idShared, fx.peerFp, fx.ownFp, resetNonce, rIn)
+        // Synthetic prekeySS / stagedPrekeyPub — this test's coverage is the convergence-
+        // decision branch reached before the receive path inspects prekey rows, so neither
+        // field has to match anything persisted in the fixture's DB state.
+        val prekeySS = ByteArray(32) { (0x55 + it).toByte() }
+        val kReset = ResetCrypto.deriveKReset(idShared, prekeySS, fx.peerFp, fx.ownFp, resetNonce, rIn)
         val uuid = ByteArray(FrameCodec.UUID_BYTES).also { SecureRandom().nextBytes(it) }
         val wire = ResetCrypto.encode(
             senderFp = fx.peerFp,
@@ -584,7 +588,11 @@ class ResetReceiveTest {
             R = rIn,
             uuid = uuid,
             timestampMs = initialTime,
-            plaintext = ResetCrypto.Plaintext(ack = ack, postResetEphPub = postResetEphPub),
+            plaintext = ResetCrypto.Plaintext(
+                ack = ack,
+                postResetEphPub = postResetEphPub,
+                stagedPrekeyPub = ByteArray(32) { (0x66 + it).toByte() }
+            ),
             kReset = kReset
         )
         return (FrameCodec.decode(wire) as FrameCodec.DecodeResult.Ok).frame
@@ -604,7 +612,8 @@ class ResetReceiveTest {
         val frame = (FrameCodec.decode(wire) as FrameCodec.DecodeResult.Ok).frame
         val resetNonce = ResetCrypto.extractResetNonce(frame)
         val rOut = ResetCrypto.extractR(frame)
-        val kReset = ResetCrypto.deriveKReset(idShared, fx.ownFp, fx.peerFp, resetNonce, rOut)
+        val prekeySS = ByteArray(32) { (0x55 + it).toByte() }
+        val kReset = ResetCrypto.deriveKReset(idShared, prekeySS, fx.ownFp, fx.peerFp, resetNonce, rOut)
         val pt = (ResetCrypto.decrypt(frame, kReset) as ResetCrypto.DecodeOutcome.Ok).plaintext
         return DecodedAck(
             rOut = rOut,
