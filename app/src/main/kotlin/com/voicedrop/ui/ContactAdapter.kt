@@ -19,38 +19,32 @@ class ContactAdapter(
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
         val view = LayoutInflater.from(parent.context)
             .inflate(R.layout.item_contact, parent, false)
-        return ViewHolder(view, this)
+        return ViewHolder(view)
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val contact = getItem(position)
-        holder.bind(contact, currentList)
+        holder.bind(contact)
         holder.itemView.setOnClickListener { onContactClick(contact.id) }
     }
 
-    fun refreshActiveTicks() {
-        notifyDataSetChanged()
-    }
-
-    class ViewHolder(view: View, private val adapter: ContactAdapter) :
-        RecyclerView.ViewHolder(view) {
+    class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         private val nameText: TextView = view.findViewById(R.id.text_contact_name)
         private val checkbox: CheckBox = view.findViewById(R.id.checkbox_active)
 
-        fun bind(contact: ContactEntity, all: List<ContactEntity>) {
+        fun bind(contact: ContactEntity) {
             val ctx = itemView.context
             nameText.text = contact.name
 
-            // Tick reflects the explicit default; falls back to "newest" only when unset,
-            // so a fresh install with one contact still shows it ticked.
-            val resolved = ActiveContactsPrefs.resolveRecipient(ctx, all)
-            val isChecked = resolved?.id == contact.id
+            // Multi-select: tick reflects this contact's membership in the persisted set.
+            val isChecked = ActiveContactsPrefs.getActiveIds(ctx).contains(contact.id)
 
+            // Null the listener before mutating the checked state so recycled views
+            // don't fire a spurious onCheckedChanged with the previous row's id.
             checkbox.setOnCheckedChangeListener(null)
             checkbox.isChecked = isChecked
             checkbox.setOnCheckedChangeListener { _, checked ->
-                ActiveContactsPrefs.setDefaultId(ctx, if (checked) contact.id else null)
-                adapter.refreshActiveTicks()
+                ActiveContactsPrefs.setActive(ctx, contact.id, checked)
             }
         }
     }
