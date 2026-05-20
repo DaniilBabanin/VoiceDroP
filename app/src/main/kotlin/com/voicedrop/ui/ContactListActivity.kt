@@ -33,7 +33,6 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 
 class ContactListActivity : AppCompatActivity() {
 
@@ -234,34 +233,11 @@ class ContactListActivity : AppCompatActivity() {
 
     private suspend fun deleteContact(contact: ContactEntity) {
         withContext(Dispatchers.IO) {
-            val messages = repository.getMessagesForContact(contact.id)
-            for (message in messages) {
-                message.encryptedFilePath?.let { secureDelete(File(it)) }
-            }
-            File(filesDir, "messages/${contact.id}").listFiles()?.forEach { secureDelete(it) }
+            // Refcount-aware: opus files shared with other contacts' rows are preserved.
+            repository.deleteAllMessagesForContactWithBlobCleanup(contact.id)
         }
         repository.deleteContact(contact)
         VoiceDropWidgetProvider.refreshAll(this@ContactListActivity)
-    }
-
-    private fun secureDelete(file: File) {
-        if (!file.exists()) return
-        try {
-            val length = file.length()
-            if (length > 0) {
-                file.outputStream().use { out ->
-                    val zeros = ByteArray(minOf(length, 65536).toInt())
-                    var remaining = length
-                    while (remaining > 0) {
-                        val toWrite = minOf(remaining, zeros.size.toLong()).toInt()
-                        out.write(zeros, 0, toWrite)
-                        remaining -= toWrite
-                    }
-                }
-            }
-        } finally {
-            file.delete()
-        }
     }
 
     private fun isSignalingUrlConfigured(): Boolean {
