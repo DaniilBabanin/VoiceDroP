@@ -8,12 +8,17 @@ object ServiceState {
 
     data class RecordingState(
         val state: State,
-        val activeContactId: String?,
+        /**
+         * Contact ids being recorded for. Empty when [state] == IDLE.
+         * Length == 1 for the existing per-contact widget and picker fallback;
+         * length > 1 for the tile or All-widget fanning out across a set.
+         */
+        val activeContactIds: List<String>,
         val startedAtElapsedRealtime: Long = 0L,
         val startedAtWallClock: Long = 0L,
     )
 
-    private val _recordingState = MutableStateFlow(RecordingState(State.IDLE, null))
+    private val _recordingState = MutableStateFlow(RecordingState(State.IDLE, emptyList()))
     val recordingState: StateFlow<RecordingState> = _recordingState
 
     private val _playingUuid = MutableStateFlow<String?>(null)
@@ -21,13 +26,13 @@ object ServiceState {
 
     fun updateState(
         state: State,
-        contactId: String?,
+        contactIds: List<String>,
         startedAtElapsedRealtime: Long = 0L,
         startedAtWallClock: Long = 0L,
     ) {
         _recordingState.value = RecordingState(
             state,
-            contactId,
+            contactIds,
             startedAtElapsedRealtime,
             startedAtWallClock,
         )

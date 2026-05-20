@@ -257,7 +257,7 @@ class VoiceDropService : Service() {
             vibrateDouble()
             ServiceState.updateState(
                 ServiceState.State.RECORDING,
-                contactId,
+                listOf(contactId),
                 recordStartElapsedRealtime,
                 recordStartTime,
             )
@@ -269,7 +269,7 @@ class VoiceDropService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start recording", e)
                 startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
-                ServiceState.updateState(ServiceState.State.IDLE, null)
+                ServiceState.updateState(ServiceState.State.IDLE, emptyList())
                 VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
             }
         }
@@ -281,7 +281,7 @@ class VoiceDropService : Service() {
             recordingContactId = null
 
             vibrateSingle()
-            ServiceState.updateState(ServiceState.State.SENDING, contactId)
+            ServiceState.updateState(ServiceState.State.SENDING, listOf(contactId))
             VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
             notificationHelper.updateRecordingNotification(NOTIFICATION_ID_RECORDING, "Sending…")
 
@@ -338,7 +338,7 @@ class VoiceDropService : Service() {
             } finally {
                 releaseWakeLock()
                 startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
-                ServiceState.updateState(ServiceState.State.IDLE, null)
+                ServiceState.updateState(ServiceState.State.IDLE, emptyList())
                 VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
             }
         }

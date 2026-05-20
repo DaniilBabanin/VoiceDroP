@@ -73,7 +73,7 @@ class VoiceDropWidgetProvider : AppWidgetProvider() {
 
             val isRecordingThisContact =
                 serviceState.state == ServiceState.State.RECORDING &&
-                    serviceState.activeContactId == contactId
+                    contactId in serviceState.activeContactIds
 
             if (isRecordingThisContact) {
                 val views = renderRecording(
@@ -100,7 +100,7 @@ class VoiceDropWidgetProvider : AppWidgetProvider() {
                 // Re-check state — service could have flipped to recording while we were loading.
                 val nowState = ServiceState.recordingState.value
                 if (nowState.state == ServiceState.State.RECORDING &&
-                    nowState.activeContactId == contactId
+                    contactId in nowState.activeContactIds
                 ) {
                     val v = renderRecording(context, widgetId, nowState.startedAtElapsedRealtime)
                     appWidgetManager.updateAppWidget(widgetId, v)
