@@ -483,13 +483,7 @@ class ResetReceiveTest {
         val peerIdPub: ByteArray,
         val peerFp: ByteArray,
         val role: Role,
-        val receive: ResetReceive,
-        /**
-         * §3.2 — prekeySS the production receive path will derive when it loads
-         * this contact's active prekey row. Tests that construct synthetic
-         * RESET frames must use this same value so AEAD verifies.
-         */
-        val prekeySS: ByteArray
+        val receive: ResetReceive
     )
 
     /**
@@ -535,11 +529,12 @@ class ResetReceiveTest {
             )
         }
 
-        // §3.2 — seed the active(epoch=0) prekey row. Production receive path
-        // will compute prekeySS = X25519(my_priv, peer_pub); the returned value
-        // is the same and must be used wherever this fixture constructs a
-        // synthetic RESET frame so AEAD verifies.
-        val prekeySS = seedActivePrekey0(contactId)
+        // §3.2 — seed the active(epoch=0) prekey row. After this point,
+        // production rotates active on every FreshReset, so any test that
+        // constructs synthetic frames in a loop must re-read the current
+        // active row each iteration via [activePrekeySS] (not a fixed seed
+        // value snapshotted at fixture time).
+        seedActivePrekey0(contactId)
 
         val idShared = this.idShared
         val receive = ResetReceive(
@@ -554,13 +549,12 @@ class ResetReceiveTest {
             ownIdPriv = ownPriv, ownIdPub = ownPub, ownFp = ownFp,
             peerIdPriv = peerPriv, peerIdPub = peerPub, peerFp = peerFp,
             role = role,
-            receive = receive,
-            prekeySS = prekeySS
+            receive = receive
         )
     }
 
-    /** Insert active(epoch=0) prekey row; returns prekeySS = X25519(my_priv, peer_pub). */
-    private fun seedActivePrekey0(contactId: String): ByteArray = runBlocking {
+    /** Insert active(epoch=0) prekey row with freshly-generated keys. */
+    private fun seedActivePrekey0(contactId: String) = runBlocking {
         val kp = Prekey.generate()
         val peerPrekeyPub = X25519.publicFromPrivate(X25519.generatePrivateKey())
         val rowId = PrekeyEpochEntity.rowIdFor(contactId, 0)
@@ -577,8 +571,35 @@ class ResetReceiveTest {
                 expires_at = null
             )
         )
-        Prekey.sharedSecret(kp.priv, peerPrekeyPub)
     }
+
+    /**
+     * Read the current `status='active'` (or 'previous') prekey row and
+     * compute `prekeySS = X25519(unwrap(my_priv), peer_pub)`. Mirrors
+     * production [ResetReceive.loadActivePrekeySS]. Returns null when no
+     * such row exists — caller falls back to the other status as needed.
+     *
+     * Must be called fresh each time the test synthesizes a K_reset because
+     * `applyFreshReset` rotates the active row on every successful inbound:
+     * a fixture-time snapshot goes stale after the first reset cycle.
+     */
+    private fun prekeySSForStatus(contactId: String, status: String): ByteArray? = runBlocking {
+        val row = db.prekeyEpochDao().byStatusBlocking(contactId, status) ?: return@runBlocking null
+        val peer = row.peer_pub ?: return@runBlocking null
+        val rId = PrekeyEpochEntity.rowIdFor(contactId, row.epoch)
+        val priv = wrapMac.unwrapAndVerify(
+            PrekeyEpochEntity.COL_MY_PRIV, rId, row.my_priv_wrapped, row.my_priv_hmac
+        )
+        try {
+            Prekey.sharedSecret(priv, peer)
+        } finally {
+            priv.fill(0)
+        }
+    }
+
+    private fun activePrekeySS(contactId: String): ByteArray =
+        prekeySSForStatus(contactId, PrekeyEpochEntity.STATUS_ACTIVE)
+            ?: error("no active prekey row for $contactId — fixture not seeded?")
 
     /**
      * Build an inbound RESET frame as if it came from the peer. Selects a valid
@@ -610,10 +631,12 @@ class ResetReceiveTest {
         postResetEphPub: ByteArray
     ): FrameCodec.DecodedFrame {
         // K_reset from peer's POV: sender=peer, recip=us, R=rIn, nonce=resetNonce.
-        // §3.2 — prekeySS must match what production will derive from this contact's
-        // active prekey row (seeded in [freshContact] via [seedActivePrekey0]); X25519
-        // is symmetric so both sides compute the same value.
-        val kReset = ResetCrypto.deriveKReset(idShared, fx.prekeySS, fx.peerFp, fx.ownFp, resetNonce, rIn)
+        // §3.2 — re-read the active prekey row at frame-build time. Tests that
+        // build multiple frames in sequence (e.g. [reset_inboundRateLimit_4FreshRPer24h])
+        // must use the CURRENT active row because production rotates active on
+        // every FreshReset; a snapshot from fixture time goes stale after one cycle.
+        val prekeySS = activePrekeySS(fx.contactId)
+        val kReset = ResetCrypto.deriveKReset(idShared, prekeySS, fx.peerFp, fx.ownFp, resetNonce, rIn)
         val uuid = ByteArray(FrameCodec.UUID_BYTES).also { SecureRandom().nextBytes(it) }
         val wire = ResetCrypto.encode(
             senderFp = fx.peerFp,
@@ -649,14 +672,38 @@ class ResetReceiveTest {
         val frame = (FrameCodec.decode(wire) as FrameCodec.DecodeResult.Ok).frame
         val resetNonce = ResetCrypto.extractResetNonce(frame)
         val rOut = ResetCrypto.extractR(frame)
-        val kReset = ResetCrypto.deriveKReset(idShared, fx.prekeySS, fx.ownFp, fx.peerFp, resetNonce, rOut)
-        val pt = (ResetCrypto.decrypt(frame, kReset) as ResetCrypto.DecodeOutcome.Ok).plaintext
+        // §3.2 — outbounds enqueued during processInsideTxn are encoded with the
+        // SAME prekeySS that opened the inbound. After applyFreshReset rotates
+        // active → previous, decoding the outbound needs the previous row's
+        // prekeySS (active was just regenerated and doesn't match). For paths
+        // that don't rotate (manualResetInitiate's outbound; applyConvergence's
+        // re-ack), active is still right. Mirror production's §6.5 fallback:
+        // try active first, then previous.
+        val pt = tryDecodeOutbox(fx, frame, resetNonce, rOut, PrekeyEpochEntity.STATUS_ACTIVE)
+            ?: tryDecodeOutbox(fx, frame, resetNonce, rOut, PrekeyEpochEntity.STATUS_PREVIOUS)
+            ?: error("decodeOutbox: AEAD failed under both active and previous prekeys")
         return DecodedAck(
             rOut = rOut,
             resetNonce = resetNonce,
             ackByte = pt.ack,
             postResetEphPub = pt.postResetEphPub
         )
+    }
+
+    private fun tryDecodeOutbox(
+        fx: Fixture,
+        frame: FrameCodec.DecodedFrame,
+        resetNonce: ByteArray,
+        rOut: Int,
+        status: String
+    ): ResetCrypto.Plaintext? {
+        val prekeySS = prekeySSForStatus(fx.contactId, status) ?: return null
+        val kReset = ResetCrypto.deriveKReset(idShared, prekeySS, fx.ownFp, fx.peerFp, resetNonce, rOut)
+        return try {
+            (ResetCrypto.decrypt(frame, kReset) as? ResetCrypto.DecodeOutcome.Ok)?.plaintext
+        } finally {
+            kReset.fill(0)
+        }
     }
 
     private class DecodedAck(
