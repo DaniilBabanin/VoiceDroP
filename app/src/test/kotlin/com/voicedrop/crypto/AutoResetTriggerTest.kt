@@ -7,6 +7,7 @@ import com.google.crypto.tink.config.TinkConfig
 import com.google.crypto.tink.subtle.X25519
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.ContactEntity
+import com.voicedrop.storage.PrekeyEpochEntity
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.Mac
@@ -328,6 +329,11 @@ class AutoResetTriggerTest {
             )
         }
 
+        // §3.2 — production receive path loads the active prekey row before any
+        // reset operation. Seed an active(epoch=0) row so manualResetInitiate /
+        // processInsideTxn can derive prekeySS from the DB.
+        seedActivePrekey0(contactId)
+
         val idSharedSnapshot = idShared
         val clockFn = { nowMs }
         val receive = ResetReceive(
@@ -349,6 +355,34 @@ class AutoResetTriggerTest {
             role = role,
             receive = receive,
             trigger = trigger
+        )
+    }
+
+    /**
+     * §3.2 — insert an `active(epoch=0)` prekey row using freshly-generated
+     * keys. The own_priv is wrapped via [wrapMac] (TestWrapMac mirrors
+     * production [KeyManager.wrapAndMac] semantics for column+row binding).
+     * AutoResetTrigger tests never synthesize inbound RESET frames, so the
+     * specific prekeySS value isn't observed here — they only need a row to
+     * exist so the production [ResetReceive.loadActivePrekeySS] path doesn't
+     * `error()` when manualResetInitiate fires.
+     */
+    private fun seedActivePrekey0(contactId: String) = runBlocking {
+        val kp = Prekey.generate()
+        val peerPrekeyPub = X25519.publicFromPrivate(X25519.generatePrivateKey())
+        val rowId = PrekeyEpochEntity.rowIdFor(contactId, 0)
+        val (privW, privH) = wrapMac.wrapAndMac(PrekeyEpochEntity.COL_MY_PRIV, rowId, kp.priv)
+        db.prekeyEpochDao().insert(
+            PrekeyEpochEntity(
+                contact_id = contactId,
+                epoch = 0,
+                status = PrekeyEpochEntity.STATUS_ACTIVE,
+                my_priv_wrapped = privW,
+                my_priv_hmac = privH,
+                my_pub = kp.pub,
+                peer_pub = peerPrekeyPub,
+                expires_at = null
+            )
         )
     }
 

@@ -9,6 +9,7 @@ import com.voicedrop.network.FrameCodec
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.ContactEntity
 import com.voicedrop.storage.PendingOutboundFrameEntity
+import com.voicedrop.storage.PrekeyEpochEntity
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.Mac
@@ -482,7 +483,13 @@ class ResetReceiveTest {
         val peerIdPub: ByteArray,
         val peerFp: ByteArray,
         val role: Role,
-        val receive: ResetReceive
+        val receive: ResetReceive,
+        /**
+         * §3.2 — prekeySS the production receive path will derive when it loads
+         * this contact's active prekey row. Tests that construct synthetic
+         * RESET frames must use this same value so AEAD verifies.
+         */
+        val prekeySS: ByteArray
     )
 
     /**
@@ -528,6 +535,12 @@ class ResetReceiveTest {
             )
         }
 
+        // §3.2 — seed the active(epoch=0) prekey row. Production receive path
+        // will compute prekeySS = X25519(my_priv, peer_pub); the returned value
+        // is the same and must be used wherever this fixture constructs a
+        // synthetic RESET frame so AEAD verifies.
+        val prekeySS = seedActivePrekey0(contactId)
+
         val idShared = this.idShared
         val receive = ResetReceive(
             db = db,
@@ -541,8 +554,30 @@ class ResetReceiveTest {
             ownIdPriv = ownPriv, ownIdPub = ownPub, ownFp = ownFp,
             peerIdPriv = peerPriv, peerIdPub = peerPub, peerFp = peerFp,
             role = role,
-            receive = receive
+            receive = receive,
+            prekeySS = prekeySS
         )
+    }
+
+    /** Insert active(epoch=0) prekey row; returns prekeySS = X25519(my_priv, peer_pub). */
+    private fun seedActivePrekey0(contactId: String): ByteArray = runBlocking {
+        val kp = Prekey.generate()
+        val peerPrekeyPub = X25519.publicFromPrivate(X25519.generatePrivateKey())
+        val rowId = PrekeyEpochEntity.rowIdFor(contactId, 0)
+        val (privW, privH) = wrapMac.wrapAndMac(PrekeyEpochEntity.COL_MY_PRIV, rowId, kp.priv)
+        db.prekeyEpochDao().insert(
+            PrekeyEpochEntity(
+                contact_id = contactId,
+                epoch = 0,
+                status = PrekeyEpochEntity.STATUS_ACTIVE,
+                my_priv_wrapped = privW,
+                my_priv_hmac = privH,
+                my_pub = kp.pub,
+                peer_pub = peerPrekeyPub,
+                expires_at = null
+            )
+        )
+        Prekey.sharedSecret(kp.priv, peerPrekeyPub)
     }
 
     /**
@@ -575,11 +610,10 @@ class ResetReceiveTest {
         postResetEphPub: ByteArray
     ): FrameCodec.DecodedFrame {
         // K_reset from peer's POV: sender=peer, recip=us, R=rIn, nonce=resetNonce.
-        // Synthetic prekeySS / stagedPrekeyPub — this test's coverage is the convergence-
-        // decision branch reached before the receive path inspects prekey rows, so neither
-        // field has to match anything persisted in the fixture's DB state.
-        val prekeySS = ByteArray(32) { (0x55 + it).toByte() }
-        val kReset = ResetCrypto.deriveKReset(idShared, prekeySS, fx.peerFp, fx.ownFp, resetNonce, rIn)
+        // §3.2 — prekeySS must match what production will derive from this contact's
+        // active prekey row (seeded in [freshContact] via [seedActivePrekey0]); X25519
+        // is symmetric so both sides compute the same value.
+        val kReset = ResetCrypto.deriveKReset(idShared, fx.prekeySS, fx.peerFp, fx.ownFp, resetNonce, rIn)
         val uuid = ByteArray(FrameCodec.UUID_BYTES).also { SecureRandom().nextBytes(it) }
         val wire = ResetCrypto.encode(
             senderFp = fx.peerFp,
@@ -591,7 +625,10 @@ class ResetReceiveTest {
             plaintext = ResetCrypto.Plaintext(
                 ack = ack,
                 postResetEphPub = postResetEphPub,
-                stagedPrekeyPub = ByteArray(32) { (0x66 + it).toByte() }
+                // §3.2 — production validates this via [isValidX25519Public]
+                // (rejects all-zero / low-order points). Generate a fresh X25519
+                // pub so the validator always passes regardless of the test.
+                stagedPrekeyPub = X25519.publicFromPrivate(X25519.generatePrivateKey())
             ),
             kReset = kReset
         )
@@ -612,8 +649,7 @@ class ResetReceiveTest {
         val frame = (FrameCodec.decode(wire) as FrameCodec.DecodeResult.Ok).frame
         val resetNonce = ResetCrypto.extractResetNonce(frame)
         val rOut = ResetCrypto.extractR(frame)
-        val prekeySS = ByteArray(32) { (0x55 + it).toByte() }
-        val kReset = ResetCrypto.deriveKReset(idShared, prekeySS, fx.ownFp, fx.peerFp, resetNonce, rOut)
+        val kReset = ResetCrypto.deriveKReset(idShared, fx.prekeySS, fx.ownFp, fx.peerFp, resetNonce, rOut)
         val pt = (ResetCrypto.decrypt(frame, kReset) as ResetCrypto.DecodeOutcome.Ok).plaintext
         return DecodedAck(
             rOut = rOut,
