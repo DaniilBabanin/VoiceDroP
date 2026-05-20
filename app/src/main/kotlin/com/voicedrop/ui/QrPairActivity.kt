@@ -17,6 +17,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
 import androidx.core.content.FileProvider
+import androidx.room.withTransaction
 import androidx.viewpager2.widget.ViewPager2
 import com.google.android.material.tabs.TabLayout
 import com.google.android.material.tabs.TabLayoutMediator
@@ -27,6 +28,7 @@ import com.voicedrop.crypto.Bootstrap
 import com.voicedrop.crypto.ContactKey
 import com.voicedrop.crypto.KeyManager
 import com.voicedrop.crypto.MessagePayload
+import com.voicedrop.crypto.Prekey
 import com.voicedrop.crypto.RatchetEncryptAndSend
 import com.voicedrop.crypto.RatchetState
 import com.voicedrop.crypto.RatchetStatePersistence
@@ -36,6 +38,7 @@ import com.voicedrop.storage.ActiveContactsPrefs
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.ContactEntity
 import com.voicedrop.storage.MessageRepository
+import com.voicedrop.storage.PrekeyEpochEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -48,9 +51,10 @@ import kotlinx.serialization.json.Json
 import java.io.File
 
 /**
- * v1 cards used `v=1` and `{id, name, pk}`. v1.2 bumps to `v=2` and adds `bep`
+ * v1 cards used `v=1` and `{id, name, pk}`. v1.2 bumped to `v=2` and added `bep`
  * (Base64-encoded 32-byte X25519 bootstrap ephemeral public key — see DR5).
- * Hard cutover: v1 cards are rejected on scan with a user-facing prompt to upgrade.
+ * v1.3 bumps to `v=3` and adds `pk0` (Base64-encoded 32-byte initial prekey
+ * public key — see §3.2). Hard cutover at every version bump.
  */
 @Serializable
 data class ContactCard(
@@ -58,7 +62,8 @@ data class ContactCard(
     val id: String,
     val name: String,
     val pk: String,
-    val bep: String? = null
+    val bep: String? = null,
+    val pk0: String? = null
 )
 
 class QrPairActivity : AppCompatActivity() {
@@ -76,6 +81,12 @@ class QrPairActivity : AppCompatActivity() {
     private lateinit var myBootstrapEphPriv: ByteArray
     private lateinit var myBootstrapEphPub: ByteArray
     private var bootstrapEphRetired = false
+
+    // §3.2 — per-pairing initial prekey (epoch 0). Persisted to prekey_epochs on
+    // confirmPairing. Same in-memory lifecycle as myBootstrapEphPriv: wiped in
+    // onDestroy regardless.
+    private lateinit var myPrekey: Prekey.KeyPair
+    private var prekeyRetired = false
 
     /**
      * DR17.5 W5 — when non-null, this is a re-pair flow for an existing contact.
@@ -105,7 +116,8 @@ class QrPairActivity : AppCompatActivity() {
     private data class PendingPeer(
         val card: ContactCard,
         val theirFingerprint: String,
-        val emojis: List<String>
+        val emojis: List<String>,
+        val peerPrekeyPub: ByteArray
     )
     private var pendingPeer: PendingPeer? = null
 
@@ -162,6 +174,7 @@ class QrPairActivity : AppCompatActivity() {
 
         myBootstrapEphPriv = X25519.generatePrivateKey()
         myBootstrapEphPub = X25519.publicFromPrivate(myBootstrapEphPriv)
+        myPrekey = Prekey.generate()
 
         repairContactId = intent?.getStringExtra(EXTRA_REPAIR_CONTACT_ID)
         if (repairContactId != null) {
@@ -232,19 +245,20 @@ class QrPairActivity : AppCompatActivity() {
         filePickerLauncher.launch("application/x-voicedrop")
     }
 
-    /** v2 contact-card JSON with this session's bootstrap ephemeral pub. */
+    /** v3 contact-card JSON with this session's bootstrap ephemeral pub and initial prekey pub. */
     internal fun getMyContactCardJson(): String {
         val prefs = getSharedPreferences("voicedrop_settings", MODE_PRIVATE)
-        val displayName = prefs.getString("display_name", "VoiceDrop User") ?: "VoiceDrop User"
-        val fp = keyManager.getFingerprint()
-        val shortId = fp.take(8)
+        val name = prefs.getString("display_name", "VoiceDrop User") ?: "VoiceDrop User"
+        val myIdPub = keyManager.getPublicKeyBytes()
         val bep = android.util.Base64.encodeToString(myBootstrapEphPub, android.util.Base64.NO_WRAP)
+        val pk0 = android.util.Base64.encodeToString(myPrekey.pub, android.util.Base64.NO_WRAP)
         val card = ContactCard(
-            v = 2,
-            id = shortId,
-            name = displayName,
-            pk = keyManager.getPublicKeyBase64(),
-            bep = bep
+            v = 3,
+            id = ContactKey.fingerprint(myIdPub),
+            name = name,
+            pk = android.util.Base64.encodeToString(myIdPub, android.util.Base64.NO_WRAP),
+            bep = bep,
+            pk0 = pk0
         )
         return json.encodeToString(card)
     }
@@ -310,12 +324,19 @@ class QrPairActivity : AppCompatActivity() {
                 }
                 val card = json.decodeFromString<ContactCard>(cardJson)
 
-                if (card.v != 2) {
-                    showError("This QR is from VoiceDrop v1.1 or older. Both devices must be on v1.2+ to pair.")
+                if (card.v != 3) {
+                    // The on-the-wire copy in v1.2 said "older" hardcoded — that string
+                    // is compiled in. v1.3 says "newer or older," naming the right
+                    // direction in both cases.
+                    showError("This QR card is from a different VoiceDrop version. Both devices must be on v1.3 to pair.")
                     return@launch
                 }
                 if (card.bep == null) {
-                    showError("Invalid v2 contact card — missing bootstrap key")
+                    showError("Invalid v3 contact card — missing bootstrap key")
+                    return@launch
+                }
+                if (card.pk0 == null) {
+                    showError("Invalid v3 contact card — missing prekey")
                     return@launch
                 }
 
@@ -334,10 +355,26 @@ class QrPairActivity : AppCompatActivity() {
                 val peerBootstrapEphPub = try {
                     android.util.Base64.decode(card.bep, android.util.Base64.NO_WRAP)
                 } catch (_: IllegalArgumentException) {
-                    showError("Invalid v2 contact card — malformed bootstrap key"); return@launch
+                    showError("Invalid v3 contact card — malformed bootstrap key"); return@launch
                 }
                 if (peerBootstrapEphPub.size != Bootstrap.X25519_BYTES) {
-                    showError("Invalid v2 contact card — bootstrap key wrong size"); return@launch
+                    showError("Invalid v3 contact card — bootstrap key wrong size"); return@launch
+                }
+                // §3.2-era gap fix: low-order check on bep was missing in v1.2.
+                if (!isValidX25519PublicForScan(peerBootstrapEphPub)) {
+                    showError("Invalid v3 contact card — bootstrap key rejected"); return@launch
+                }
+
+                val peerPrekeyPub = try {
+                    android.util.Base64.decode(card.pk0, android.util.Base64.NO_WRAP)
+                } catch (_: IllegalArgumentException) {
+                    showError("Invalid v3 contact card — malformed prekey"); return@launch
+                }
+                if (peerPrekeyPub.size != Bootstrap.X25519_BYTES) {
+                    showError("Invalid v3 contact card — prekey wrong size"); return@launch
+                }
+                if (!isValidX25519PublicForScan(peerPrekeyPub)) {
+                    showError("Invalid v3 contact card — prekey rejected"); return@launch
                 }
 
                 val myIdPriv = keyManager.getPrivateKeyBytes()
@@ -357,7 +394,7 @@ class QrPairActivity : AppCompatActivity() {
 
                 val emojis = com.voicedrop.crypto.Sas.codeFor(myIdPub, theirPublicKeyBytes)
 
-                transitionToVerify(card, theirFingerprint, initial, emojis)
+                transitionToVerify(card, theirFingerprint, initial, emojis, peerPrekeyPub)
             } catch (e: Exception) {
                 android.util.Log.e(TAG, "handleScannedCard failed", e)
                 showError("Invalid QR code — not a VoiceDrop contact card")
@@ -375,10 +412,11 @@ class QrPairActivity : AppCompatActivity() {
         card: ContactCard,
         theirFingerprint: String,
         initial: Bootstrap.InitialState,
-        emojis: List<String>
+        emojis: List<String>,
+        peerPrekeyPub: ByteArray
     ) {
         pendingInitialState = initial
-        pendingPeer = PendingPeer(card, theirFingerprint, emojis)
+        pendingPeer = PendingPeer(card, theirFingerprint, emojis, peerPrekeyPub)
         uiState = UiState.VERIFY
 
         val tabLayout = findViewById<TabLayout>(R.id.tab_layout)
@@ -423,7 +461,7 @@ class QrPairActivity : AppCompatActivity() {
         verifyContainer.findViewById<Button>(R.id.verify_button_different).isEnabled = false
 
         scope.launch {
-            confirmPairing(peer.card, peer.theirFingerprint, initial)
+            confirmPairing(peer.card, peer.theirFingerprint, initial, peer.peerPrekeyPub)
             // confirmPairing zeros initial.rootKey / dhsPriv during wrap and then
             // finishes the activity. Null the field handles to drop the references.
             pendingInitialState = null
@@ -440,6 +478,14 @@ class QrPairActivity : AppCompatActivity() {
     private fun popVerifyToShowingQr() {
         wipePendingInitialState()
         pendingPeer = null
+        // §3.2 — per-session prekey hygiene: the aborted attempt's pk0 was already
+        // broadcast on the verify-stage QR thumbnail. Don't recycle it into the next
+        // scan. (Contrast: myBootstrapEphPriv MUST stay stable across rescans so the
+        // partner's reverse-scan flow still verifies; pk0 has no such constraint.)
+        if (::myPrekey.isInitialized && !prekeyRetired) {
+            myPrekey.priv.fill(0)
+        }
+        myPrekey = Prekey.generate()
         uiState = UiState.SHOWING_QR
 
         val tabLayout = findViewById<TabLayout>(R.id.tab_layout)
@@ -463,7 +509,8 @@ class QrPairActivity : AppCompatActivity() {
     private suspend fun confirmPairing(
         card: ContactCard,
         fingerprint: String,
-        initial: Bootstrap.InitialState
+        initial: Bootstrap.InitialState,
+        peerPrekeyPub: ByteArray
     ) {
         // DR17.5 W5 — re-pair flow: the peer-identity check moved to handleScannedCard
         // (DR17.6); here we still wipe the contact's v2 state before the upsert. Not
@@ -509,7 +556,34 @@ class QrPairActivity : AppCompatActivity() {
         myBootstrapEphPriv.fill(0)
         bootstrapEphRetired = true
 
-        repository.upsertContact(contact)
+        // §3.2 §6.1 — persist epoch 0 prekey row atomically with the contact row.
+        // If the prekey insert throws (UNIQUE collision, OOM, etc.) after upsertContact
+        // landed, the transaction rolls back and the user retries pairing cleanly.
+        // Otherwise the contact would exist with full ratchet state but no
+        // prekey_epochs.active row, and ResetReceive.loadActivePrekeySS would
+        // hard-error on every subsequent RESET with no UI affordance to recover.
+        db.withTransaction {
+            repository.upsertContact(contact)
+            val prekeyRowId = PrekeyEpochEntity.rowIdFor(contact.id, epoch = 0)
+            val (privW, privH) = keyManager.wrapAndMac(
+                PrekeyEpochEntity.COL_MY_PRIV, prekeyRowId, myPrekey.priv
+            )
+            db.prekeyEpochDao().insert(
+                PrekeyEpochEntity(
+                    contact_id = contact.id,
+                    epoch = 0,
+                    status = PrekeyEpochEntity.STATUS_ACTIVE,
+                    my_priv_wrapped = privW,
+                    my_priv_hmac = privH,
+                    my_pub = myPrekey.pub.copyOf(),
+                    peer_pub = peerPrekeyPub.copyOf(),
+                    expires_at = null
+                )
+            )
+        }
+        myPrekey.priv.fill(0)
+        prekeyRetired = true
+
         if (ActiveContactsPrefs.getDefaultId(this) == null) {
             ActiveContactsPrefs.setDefaultId(this, contact.id)
         }
@@ -551,6 +625,13 @@ class QrPairActivity : AppCompatActivity() {
         startForegroundService(VoiceDropService.flushOutboxIntent(this))
     }
 
+    private fun isValidX25519PublicForScan(pub: ByteArray): Boolean {
+        if (pub.size != Bootstrap.X25519_BYTES) return false
+        if (com.voicedrop.network.FrameCodec.isAllZero(pub)) return false
+        if (com.voicedrop.network.FrameCodec.isLowOrderX25519(pub)) return false
+        return true
+    }
+
     private fun showError(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
@@ -571,6 +652,10 @@ class QrPairActivity : AppCompatActivity() {
         pendingPeer = null
         if (::myBootstrapEphPriv.isInitialized && !bootstrapEphRetired) {
             myBootstrapEphPriv.fill(0)
+        }
+        if (::myPrekey.isInitialized && !prekeyRetired) {
+            myPrekey.priv.fill(0)
+            prekeyRetired = true
         }
         super.onDestroy()
     }
