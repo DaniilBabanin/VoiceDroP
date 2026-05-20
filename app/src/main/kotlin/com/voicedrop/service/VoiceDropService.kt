@@ -30,6 +30,7 @@ import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.MessageRepository
 import com.voicedrop.storage.TransportType
 import com.voicedrop.ui.SettingsActivity.Companion.PREF_RELAY_FALLBACK_ENABLED
+import com.voicedrop.ui.AllWidgetProvider
 import com.voicedrop.ui.VoiceDropWidgetProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -269,6 +270,7 @@ class VoiceDropService : Service() {
                 recordStartTime,
             )
             VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
+            AllWidgetProvider.refreshAll(this@VoiceDropService)
 
             try {
                 audioRecorder.start()
@@ -278,6 +280,7 @@ class VoiceDropService : Service() {
                 startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
                 ServiceState.updateState(ServiceState.State.IDLE, emptyList())
                 VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
+                AllWidgetProvider.refreshAll(this@VoiceDropService)
             }
         }
     }
@@ -290,6 +293,7 @@ class VoiceDropService : Service() {
             vibrateSingle()
             ServiceState.updateState(ServiceState.State.SENDING, contactIds)
             VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
+            AllWidgetProvider.refreshAll(this@VoiceDropService)
             notificationHelper.updateRecordingNotification(NOTIFICATION_ID_RECORDING, "Sending…")
 
             try {
@@ -349,6 +353,7 @@ class VoiceDropService : Service() {
                 startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
                 ServiceState.updateState(ServiceState.State.IDLE, emptyList())
                 VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
+                AllWidgetProvider.refreshAll(this@VoiceDropService)
             }
         }
     }

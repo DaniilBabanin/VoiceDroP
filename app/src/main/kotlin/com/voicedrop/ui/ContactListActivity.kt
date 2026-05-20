@@ -238,6 +238,7 @@ class ContactListActivity : AppCompatActivity() {
         }
         repository.deleteContact(contact)
         VoiceDropWidgetProvider.refreshAll(this@ContactListActivity)
+        AllWidgetProvider.refreshAll(this@ContactListActivity)
     }
 
     private fun isSignalingUrlConfigured(): Boolean {
