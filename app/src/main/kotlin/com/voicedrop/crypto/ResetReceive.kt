@@ -5,6 +5,7 @@ import com.voicedrop.network.FrameCodec
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.ContactEntity
 import com.voicedrop.storage.PendingOutboundFrameEntity
+import com.voicedrop.storage.PrekeyEpochEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -151,22 +152,60 @@ class ResetReceive(
             return Outcome.JumpAheadCapped
         }
 
-        val kReset = ResetCrypto.deriveKReset(idShared, frame.senderFp, frame.recipFp, resetNonce, rIn)
-        val plaintext = try {
-            when (val out = ResetCrypto.decrypt(frame, kReset)) {
-                is ResetCrypto.DecodeOutcome.Ok -> out.plaintext
-                is ResetCrypto.DecodeOutcome.AeadFailure -> {
-                    eventLog("reset.dropped aead_failure R_in=$rIn")
-                    return Outcome.AeadFailure
+        // §3.2 §6.5 — AEAD fallback: active prekey row, then previous (if non-expired).
+        val prekeySSActive = loadActivePrekeySS(contactId)
+        var prekeySSUsed: ByteArray? = null
+        var prekeySSPrev: ByteArray? = null
+        var kResetActive: ByteArray? = null
+        var kResetPrev: ByteArray? = null
+
+        val plaintext: ResetCrypto.Plaintext = try {
+            kResetActive = ResetCrypto.deriveKReset(
+                idShared, prekeySSActive, frame.senderFp, frame.recipFp, resetNonce, rIn
+            )
+            when (val out = ResetCrypto.decrypt(frame, kResetActive)) {
+                is ResetCrypto.DecodeOutcome.Ok -> {
+                    prekeySSUsed = prekeySSActive.copyOf()
+                    out.plaintext
                 }
-                is ResetCrypto.DecodeOutcome.InvalidPlaintextSize -> {
+                is ResetCrypto.DecodeOutcome.AeadFailure -> {
+                    // Fall back to previous (if non-expired).
+                    prekeySSPrev = loadPreviousPrekeySS(contactId, now)
+                    if (prekeySSPrev == null) {
+                        eventLog("reset.dropped aead_failure_no_previous R_in=$rIn")
+                        return Outcome.AeadFailure
+                    }
+                    kResetPrev = ResetCrypto.deriveKReset(
+                        idShared, prekeySSPrev, frame.senderFp, frame.recipFp, resetNonce, rIn
+                    )
+                    when (val out2 = ResetCrypto.decrypt(frame, kResetPrev)) {
+                        is ResetCrypto.DecodeOutcome.Ok -> {
+                            prekeySSUsed = prekeySSPrev.copyOf()
+                            out2.plaintext
+                        }
+                        is ResetCrypto.DecodeOutcome.AeadFailure -> {
+                            eventLog("reset.dropped aead_failure_both_slots R_in=$rIn")
+                            return Outcome.AeadFailure
+                        }
+                        is ResetCrypto.DecodeOutcome.InvalidPlaintext -> {
+                            eventLog("reset.dropped invalid_plaintext R_in=$rIn")
+                            return Outcome.InvalidPlaintext
+                        }
+                    }
+                }
+                is ResetCrypto.DecodeOutcome.InvalidPlaintext -> {
                     eventLog("reset.dropped invalid_plaintext R_in=$rIn")
                     return Outcome.InvalidPlaintext
                 }
             }
         } finally {
-            kReset.fill(0)
+            prekeySSActive.fill(0)
+            prekeySSPrev?.fill(0)
+            kResetActive?.fill(0)
+            kResetPrev?.fill(0)
         }
+        // prekeySSUsed is a copy retained for the apply* branches' outbound enqueue.
+        val prekeySS = prekeySSUsed!!
 
         // Role split per [dr5] fingerprint-based ordering. From this side: peer = senderFp, me = recipFp.
         val peerIsBob = compareUnsignedBytes(frame.senderFp, frame.recipFp) >= 0
@@ -174,40 +213,56 @@ class ResetReceive(
 
         if (peerIsBob && !isValidX25519Public(plaintext.postResetEphPub)) {
             eventLog("reset.dropped post_reset_eph_invalid R_in=$rIn")
+            prekeySS.fill(0)
+            return Outcome.PostResetEphRejected
+        }
+        // §3.2 §8 — low-order / all-zero `stagedPrekeyPub` is rejected unconditionally.
+        if (!isValidX25519Public(plaintext.stagedPrekeyPub)) {
+            eventLog("reset.dropped staged_prekey_pub_invalid R_in=$rIn")
+            prekeySS.fill(0)
+            // §3.2 plan: reuse PostResetEphRejected — both signal "peer-provided public key
+            // failed low-order check" and callers treat them identically (drop without state effect).
             return Outcome.PostResetEphRejected
         }
 
         // Three R_in cases per §6.3 pseudocode.
-        return when {
-            rIn > contact.reset_epoch -> applyFreshReset(
-                contact = contact,
-                rIn = rIn,
-                resetNonce = resetNonce,
-                plaintext = plaintext,
-                peerIsBob = peerIsBob,
-                myRoleIsBob = myRoleIsBob,
-                idShared = idShared,
-                now = now
-            )
-            // rIn == contact.reset_epoch — same-R cases.
-            contact.expecting_ack != 0 -> applyConvergence(
-                contact = contact,
-                rIn = rIn,
-                plaintext = plaintext,
-                peerIsBob = peerIsBob,
-                myRoleIsBob = myRoleIsBob,
-                idShared = idShared,
-                now = now
-            )
-            else -> applyLostAck(
-                contact = contact,
-                rIn = rIn,
-                plaintext = plaintext,
-                peerIsBob = peerIsBob,
-                myRoleIsBob = myRoleIsBob,
-                idShared = idShared,
-                now = now
-            )
+        try {
+            return when {
+                rIn > contact.reset_epoch -> applyFreshReset(
+                    contact = contact,
+                    rIn = rIn,
+                    resetNonce = resetNonce,
+                    plaintext = plaintext,
+                    peerIsBob = peerIsBob,
+                    myRoleIsBob = myRoleIsBob,
+                    idShared = idShared,
+                    prekeySS = prekeySS,
+                    now = now
+                )
+                // rIn == contact.reset_epoch — same-R cases.
+                contact.expecting_ack != 0 -> applyConvergence(
+                    contact = contact,
+                    rIn = rIn,
+                    plaintext = plaintext,
+                    peerIsBob = peerIsBob,
+                    myRoleIsBob = myRoleIsBob,
+                    idShared = idShared,
+                    prekeySS = prekeySS,
+                    now = now
+                )
+                else -> applyLostAck(
+                    contact = contact,
+                    rIn = rIn,
+                    plaintext = plaintext,
+                    peerIsBob = peerIsBob,
+                    myRoleIsBob = myRoleIsBob,
+                    idShared = idShared,
+                    prekeySS = prekeySS,
+                    now = now
+                )
+            }
+        } finally {
+            prekeySS.fill(0)
         }
     }
 
@@ -219,6 +274,7 @@ class ResetReceive(
         peerIsBob: Boolean,
         myRoleIsBob: Boolean,
         idShared: ByteArray,
+        prekeySS: ByteArray,
         now: Long
     ): Outcome {
         // Inbound rate limit — applied AFTER AEAD success so unauthenticated spam doesn't burn it.
@@ -236,8 +292,10 @@ class ResetReceive(
             return Outcome.InboundRateLimited
         }
 
-        // Wipe ratchet + bootstrap fresh RK_0.
-        val rk0 = Bootstrap.deriveResetRootKey(idShared, rIn, resetNonce)
+        // §6.3 step (2): derive post-reset RK_0 under the prekeySS that opened the inbound,
+        // BEFORE promoting prekey rows — Bob's outbound ack=1 still needs to key under the
+        // same prekeySS Alice used. Promotion happens after the outbound is enqueued.
+        val rk0 = Bootstrap.deriveResetRootKey(idShared, prekeySS, rIn, resetNonce)
         val rowId = contact.id.toByteArray(Charsets.UTF_8)
         val (rkW, rkH) = wrapMac.wrapAndMac(COL_RK, rowId, rk0)
         rk0.fill(0)
@@ -274,15 +332,52 @@ class ResetReceive(
 
         // Any prior outbound RESET row was for an older R — peer's reset supersedes ours.
         deleteResetOutboxRowsInsideTxn(contact.id)
+
+        // §3.2 §6.6 — unconditional wipe of stale previous + orphaned pending rows
+        // before inserting the fresh previous(R) / active(R+1).
+        val raw = db.openHelper.writableDatabase
+        raw.execSQL(
+            "DELETE FROM prekey_epochs WHERE contact_id = ? AND status IN ('previous', 'pending')",
+            arrayOf<Any>(contact.id)
+        )
+
+        // §6.3 step (3): promote — move active(R-1) → previous, insert fresh active(R).
+        val newKp = Prekey.generate()
+        val newRowId = PrekeyEpochEntity.rowIdFor(contact.id, rIn)
+        val (privW, privH) = wrapMac.wrapAndMac(
+            PrekeyEpochEntity.COL_MY_PRIV, newRowId, newKp.priv
+        )
+        newKp.priv.fill(0)
+
+        // active(R-1) → previous (sets expires_at = now + 10min)
+        raw.execSQL(
+            "UPDATE prekey_epochs SET status = 'previous', expires_at = ? WHERE contact_id = ? AND status = 'active'",
+            arrayOf<Any>(now + PREVIOUS_TTL_MS, contact.id)
+        )
+        db.prekeyEpochDao().insertBlocking(
+            PrekeyEpochEntity(
+                contact_id = contact.id,
+                epoch = rIn,
+                status = PrekeyEpochEntity.STATUS_ACTIVE,
+                my_priv_wrapped = privW,
+                my_priv_hmac = privH,
+                my_pub = newKp.pub.copyOf(),
+                peer_pub = plaintext.stagedPrekeyPub.copyOf(),
+                expires_at = null
+            )
+        )
+
         upsertContactBlocking(wiped)
 
         if (plaintext.ack == ResetCrypto.ACK_INITIATOR) {
             enqueueAckOutbound(
                 contact = wiped,
                 idShared = idShared,
+                prekeySS = prekeySS,
                 resetNonce = resetNonce,
                 rOut = rIn,
                 myRoleIsBob = myRoleIsBob,
+                stagedPrekeyPub = newKp.pub,
                 now = now
             )
         }
@@ -297,6 +392,7 @@ class ResetReceive(
         peerIsBob: Boolean,
         myRoleIsBob: Boolean,
         idShared: ByteArray,
+        prekeySS: ByteArray,
         now: Long
     ): Outcome {
         // Helpers fire idempotently (no-op if slots already populated).
@@ -308,6 +404,19 @@ class ResetReceive(
             // drop our retransmit row so the [dr15] schedule stops on next tick.
             deleteResetOutboxRowsInsideTxn(contact.id)
             upsertContactBlocking(updated.copy(expecting_ack = 0))
+
+            // §3.2 §6.4 atomic promotion: active(R-1) → previous, pending(R) → active
+            // (binding the peer's freshly-announced stagedPrekeyPub).
+            val raw = db.openHelper.writableDatabase
+            raw.execSQL(
+                "UPDATE prekey_epochs SET status = 'previous', expires_at = ? WHERE contact_id = ? AND status = 'active'",
+                arrayOf<Any>(now + PREVIOUS_TTL_MS, contact.id)
+            )
+            val bindPeer = plaintext.stagedPrekeyPub.copyOf()
+            raw.execSQL(
+                "UPDATE prekey_epochs SET status = 'active', peer_pub = ? WHERE contact_id = ? AND status = 'pending' AND epoch = ?",
+                arrayOf<Any>(bindPeer, contact.id, rIn)
+            )
             eventLog("reset.acknowledged contact=${contact.id} R=$rIn")
             Outcome.Acknowledged
         } else {
@@ -317,14 +426,23 @@ class ResetReceive(
             enqueueAckOutbound(
                 contact = updated,
                 idShared = idShared,
+                prekeySS = prekeySS,
                 resetNonce = nonce,
                 rOut = rIn,
                 myRoleIsBob = myRoleIsBob,
+                stagedPrekeyPub = readOwnActivePrekeyPub(contact.id),
                 now = now
             )
             eventLog("reset.reacked contact=${contact.id} R=$rIn")
             Outcome.Reacked
         }
+    }
+
+    /** Reads our active prekey pub from the in-progress txn. Used when re-acking. */
+    private fun readOwnActivePrekeyPub(contactId: String): ByteArray {
+        val row = db.prekeyEpochDao().byStatusBlocking(contactId, PrekeyEpochEntity.STATUS_ACTIVE)
+            ?: error("prekey_epochs.active row missing while re-acking contact $contactId")
+        return row.my_pub.copyOf()
     }
 
     private fun applyLostAck(
@@ -334,6 +452,7 @@ class ResetReceive(
         peerIsBob: Boolean,
         myRoleIsBob: Boolean,
         idShared: ByteArray,
+        prekeySS: ByteArray,
         now: Long
     ): Outcome {
         // Adopt peer's pub if we hadn't yet (idempotent); do NOT mutate ratchet state.
@@ -352,9 +471,11 @@ class ResetReceive(
             enqueueAckOutbound(
                 contact = updated,
                 idShared = idShared,
+                prekeySS = prekeySS,
                 resetNonce = nonce,
                 rOut = rIn,
                 myRoleIsBob = myRoleIsBob,
+                stagedPrekeyPub = readOwnActivePrekeyPub(contact.id),
                 now = now
             )
             eventLog("reset.lost_ack_reacked contact=${contact.id} R=$rIn")
@@ -376,51 +497,91 @@ class ResetReceive(
 
         val newR = contact.reset_epoch + 1
         val resetNonce = ResetCrypto.newResetNonce()
-        val rk0 = Bootstrap.deriveResetRootKey(idShared, newR, resetNonce)
-        val rowId = contact.id.toByteArray(Charsets.UTF_8)
-        val (rkW, rkH) = wrapMac.wrapAndMac(COL_RK, rowId, rk0)
-        rk0.fill(0)
 
-        // Role decided from on-disk peer identity, not the (absent) inbound header.
-        val peerIdPub = android.util.Base64.decode(contact.publicKeyBase64, android.util.Base64.NO_WRAP)
-        val peerFp = Bootstrap.fingerprintBytes(peerIdPub)
-        val myRoleIsBob = compareUnsignedBytes(ownFingerprint32, peerFp) >= 0
+        // §3.2 §6.2 — derive prekeySS from the active row (pre-promotion). The
+        // outbound RESET keys under this prekeySS; the pending(newR) row's
+        // peer_pub is filled when ack=1 arrives via applyConvergence.
+        val prekeySS = loadActivePrekeySS(contactId)
+        try {
+            val rk0 = Bootstrap.deriveResetRootKey(idShared, prekeySS, newR, resetNonce)
+            val rowId = contact.id.toByteArray(Charsets.UTF_8)
+            val (rkW, rkH) = wrapMac.wrapAndMac(COL_RK, rowId, rk0)
+            rk0.fill(0)
 
-        var wiped = contact.copy(
-            dhs_priv_wrapped = null,
-            dhs_priv_hmac = null,
-            dhs_pub = null,
-            dhr_pub = null,
-            rk_wrapped = rkW,
-            rk_hmac = rkH,
-            cks_wrapped = null,
-            cks_hmac = null,
-            ckr_wrapped = null,
-            ckr_hmac = null,
-            ns = 0,
-            nr = 0,
-            pn = 0,
-            reset_epoch = newR,
-            reset_nonce = resetNonce.copyOf(),
-            expecting_ack = 1
-        )
-        wiped = ensureMyPostResetEph(wiped, myRoleIsBob)
-        // Any stale RESET rows from prior initiations would race against the new
-        // schedule; drop them before INSERTing the fresh row.
-        deleteResetOutboxRowsInsideTxn(contact.id)
-        upsertContactBlocking(wiped)
+            // Role decided from on-disk peer identity, not the (absent) inbound header.
+            val peerIdPub = android.util.Base64.decode(contact.publicKeyBase64, android.util.Base64.NO_WRAP)
+            val peerFp = Bootstrap.fingerprintBytes(peerIdPub)
+            val myRoleIsBob = compareUnsignedBytes(ownFingerprint32, peerFp) >= 0
 
-        enqueueInitiatorOutbound(
-            contact = wiped,
-            idShared = idShared,
-            resetNonce = resetNonce,
-            rOut = newR,
-            peerFp = peerFp,
-            myRoleIsBob = myRoleIsBob,
-            now = now
-        )
-        eventLog("reset.init contact=$contactId R=$newR role=${if (myRoleIsBob) "bob" else "alice"}")
-        return Outcome.InitiatedReset
+            var wiped = contact.copy(
+                dhs_priv_wrapped = null,
+                dhs_priv_hmac = null,
+                dhs_pub = null,
+                dhr_pub = null,
+                rk_wrapped = rkW,
+                rk_hmac = rkH,
+                cks_wrapped = null,
+                cks_hmac = null,
+                ckr_wrapped = null,
+                ckr_hmac = null,
+                ns = 0,
+                nr = 0,
+                pn = 0,
+                reset_epoch = newR,
+                reset_nonce = resetNonce.copyOf(),
+                expecting_ack = 1
+            )
+            wiped = ensureMyPostResetEph(wiped, myRoleIsBob)
+            // Any stale RESET rows from prior initiations would race against the new
+            // schedule; drop them before INSERTing the fresh row.
+            deleteResetOutboxRowsInsideTxn(contact.id)
+
+            // §3.2 §6.6 — wipe stale previous + orphaned pending rows before staging the new pending(newR).
+            val raw = db.openHelper.writableDatabase
+            raw.execSQL(
+                "DELETE FROM prekey_epochs WHERE contact_id = ? AND status IN ('previous', 'pending')",
+                arrayOf<Any>(contact.id)
+            )
+
+            // §6.2 stage pending(newR) with peer_pub=NULL — filled when ack=1 arrives.
+            val newKp = Prekey.generate()
+            val newPrekeyRowId = PrekeyEpochEntity.rowIdFor(contact.id, newR)
+            val (privW, privH) = wrapMac.wrapAndMac(
+                PrekeyEpochEntity.COL_MY_PRIV, newPrekeyRowId, newKp.priv
+            )
+            newKp.priv.fill(0)
+            db.prekeyEpochDao().insertBlocking(
+                PrekeyEpochEntity(
+                    contact_id = contact.id,
+                    epoch = newR,
+                    status = PrekeyEpochEntity.STATUS_PENDING,
+                    my_priv_wrapped = privW,
+                    my_priv_hmac = privH,
+                    my_pub = newKp.pub.copyOf(),
+                    peer_pub = null,
+                    expires_at = null
+                )
+            )
+
+            upsertContactBlocking(wiped)
+
+            enqueueInitiatorOutbound(
+                contact = wiped,
+                idShared = idShared,
+                prekeySS = prekeySS,
+                resetNonce = resetNonce,
+                rOut = newR,
+                peerFp = peerFp,
+                myRoleIsBob = myRoleIsBob,
+                stagedPrekeyPub = newKp.pub,
+                now = now
+            )
+
+            eventLog("reset.init contact=$contactId R=$newR role=${if (myRoleIsBob) "bob" else "alice"}")
+            return Outcome.InitiatedReset
+        } finally {
+            prekeySS.fill(0)
+        }
     }
 
     // ----- helpers -----
@@ -459,53 +620,63 @@ class ResetReceive(
     private fun enqueueAckOutbound(
         contact: ContactEntity,
         idShared: ByteArray,
+        prekeySS: ByteArray,
         resetNonce: ByteArray,
         rOut: Int,
         myRoleIsBob: Boolean,
+        stagedPrekeyPub: ByteArray,
         now: Long
     ) {
         enqueueResetOutbound(
             contact = contact,
             idShared = idShared,
+            prekeySS = prekeySS,
             resetNonce = resetNonce,
             rOut = rOut,
             ack = ResetCrypto.ACK_ACKNOWLEDGER,
             myRoleIsBob = myRoleIsBob,
             peerFp = peerFingerprintOf(contact),
-            now = now
+            now = now,
+            stagedPrekeyPub = stagedPrekeyPub
         )
     }
 
     private fun enqueueInitiatorOutbound(
         contact: ContactEntity,
         idShared: ByteArray,
+        prekeySS: ByteArray,
         resetNonce: ByteArray,
         rOut: Int,
         peerFp: ByteArray,
         myRoleIsBob: Boolean,
+        stagedPrekeyPub: ByteArray,
         now: Long
     ) {
         enqueueResetOutbound(
             contact = contact,
             idShared = idShared,
+            prekeySS = prekeySS,
             resetNonce = resetNonce,
             rOut = rOut,
             ack = ResetCrypto.ACK_INITIATOR,
             myRoleIsBob = myRoleIsBob,
             peerFp = peerFp,
-            now = now
+            now = now,
+            stagedPrekeyPub = stagedPrekeyPub
         )
     }
 
     private fun enqueueResetOutbound(
         contact: ContactEntity,
         idShared: ByteArray,
+        prekeySS: ByteArray,
         resetNonce: ByteArray,
         rOut: Int,
         ack: Byte,
         myRoleIsBob: Boolean,
         peerFp: ByteArray,
-        now: Long
+        now: Long,
+        stagedPrekeyPub: ByteArray
     ) {
         val postResetEphPub = if (myRoleIsBob) {
             requireNotNull(contact.dhs_pub) { "Bob-role outbound RESET requires dhs_pub" }.copyOf()
@@ -513,7 +684,9 @@ class ResetReceive(
             ByteArray(ResetCrypto.POST_RESET_EPH_PUB_BYTES) // 32 zero bytes
         }
         val uuid = newUuid().also { require(it.size == FrameCodec.UUID_BYTES) }
-        val kReset = ResetCrypto.deriveKReset(idShared, ownFingerprint32, peerFp, resetNonce, rOut)
+        val kReset = ResetCrypto.deriveKReset(
+            idShared, prekeySS, ownFingerprint32, peerFp, resetNonce, rOut
+        )
         val wire = try {
             ResetCrypto.encode(
                 senderFp = ownFingerprint32,
@@ -522,7 +695,11 @@ class ResetReceive(
                 R = rOut,
                 uuid = uuid,
                 timestampMs = now,
-                plaintext = ResetCrypto.Plaintext(ack = ack, postResetEphPub = postResetEphPub),
+                plaintext = ResetCrypto.Plaintext(
+                    ack = ack,
+                    postResetEphPub = postResetEphPub,
+                    stagedPrekeyPub = stagedPrekeyPub
+                ),
                 kReset = kReset
             )
         } finally {
@@ -547,6 +724,45 @@ class ResetReceive(
     private fun peerFingerprintOf(contact: ContactEntity): ByteArray {
         val pub = android.util.Base64.decode(contact.publicKeyBase64, android.util.Base64.NO_WRAP)
         return Bootstrap.fingerprintBytes(pub)
+    }
+
+    /**
+     * Loads the contact's `status='active'` prekey row and derives
+     * `prekeySS = X25519(unwrap(my_priv), peer_pub)`. The caller owns the
+     * returned 32-byte buffer and MUST `fill(0)` after use.
+     */
+    private fun loadActivePrekeySS(contactId: String): ByteArray {
+        val row = db.prekeyEpochDao().byStatusBlocking(contactId, PrekeyEpochEntity.STATUS_ACTIVE)
+            ?: error("prekey_epochs.active row missing for contact $contactId")
+        val peer = row.peer_pub
+            ?: error("prekey_epochs.active.peer_pub NULL for contact $contactId")
+        val rId = PrekeyEpochEntity.rowIdFor(contactId, row.epoch)
+        val myPriv = wrapMac.unwrapAndVerify(
+            PrekeyEpochEntity.COL_MY_PRIV, rId, row.my_priv_wrapped, row.my_priv_hmac
+        )
+        return try {
+            Prekey.sharedSecret(myPriv, peer)
+        } finally {
+            myPriv.fill(0)
+        }
+    }
+
+    /** Same as [loadActivePrekeySS] but for the `status='previous'` row. Returns null if absent or expired. */
+    private fun loadPreviousPrekeySS(contactId: String, now: Long): ByteArray? {
+        val row = db.prekeyEpochDao().byStatusBlocking(contactId, PrekeyEpochEntity.STATUS_PREVIOUS)
+            ?: return null
+        val exp = row.expires_at ?: return null
+        if (exp <= now) return null
+        val peer = row.peer_pub ?: return null
+        val rId = PrekeyEpochEntity.rowIdFor(contactId, row.epoch)
+        val myPriv = wrapMac.unwrapAndVerify(
+            PrekeyEpochEntity.COL_MY_PRIV, rId, row.my_priv_wrapped, row.my_priv_hmac
+        )
+        return try {
+            Prekey.sharedSecret(myPriv, peer)
+        } finally {
+            myPriv.fill(0)
+        }
     }
 
     /**
@@ -660,6 +876,13 @@ class ResetReceive(
         const val INBOUND_MAX_PER_24H = 4
         const val INBOUND_WINDOW_MS = 24L * 60 * 60 * 1000
         const val BUDGET_EXHAUSTED_MS = 7L * 24 * 60 * 60 * 1000
+
+        /**
+         * §3.2 §6.6 — TTL applied to the row demoted from `active` to `previous`. A
+         * RESET in flight that was keyed under the pre-rotation prekey can still be
+         * opened within this window via [loadPreviousPrekeySS].
+         */
+        const val PREVIOUS_TTL_MS = 10L * 60L * 1000L
 
         private const val COL_RK = "contacts.rk_wrapped"
         private const val COL_DHS_PRIV = "contacts.dhs_priv_wrapped"
