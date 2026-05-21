@@ -38,7 +38,10 @@ class RecordingBanner(
     private val repository: MessageRepository,
     private val scope: CoroutineScope,
 ) {
-    private val root: View = rootView.findViewById(R.id.banner_recording_root)
+    // The host activity wraps `banner_recording` via <include android:id="@+id/banner_recording" ...>,
+    // which overrides the included layout's root id, so `rootView` itself IS the banner root.
+    // findViewById(R.id.banner_recording_root) on the override path returns null.
+    private val root: View = rootView
     private val label: TextView = rootView.findViewById(R.id.banner_recording_label)
     private val timer: Chronometer = rootView.findViewById(R.id.banner_recording_timer)
     private val cancelBtn: ImageButton = rootView.findViewById(R.id.banner_recording_cancel)

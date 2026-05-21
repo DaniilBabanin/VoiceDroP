@@ -27,7 +27,9 @@ class PlaybackBanner(
     private val repository: MessageRepository,
     private val scope: CoroutineScope,
 ) {
-    private val root: View = rootView.findViewById(R.id.banner_playback_root)
+    // Host activity wraps the banner via <include android:id="@+id/banner_playback" ...>,
+    // which overrides the included layout's root id (`banner_playback_root`). `rootView` IS the root.
+    private val root: View = rootView
     private val pauseBtn: ImageButton = rootView.findViewById(R.id.banner_playback_pause)
     private val seekBar: SeekBar = rootView.findViewById(R.id.banner_playback_seek)
     private val timeText: TextView = rootView.findViewById(R.id.banner_playback_time)
