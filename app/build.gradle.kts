@@ -15,8 +15,8 @@ android {
         applicationId = "com.voicedrop"
         minSdk = 28
         targetSdk = 36
-        versionCode = 78
-        versionName = "1.4.0.4"
+        versionCode = 79
+        versionName = "1.4.0.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
