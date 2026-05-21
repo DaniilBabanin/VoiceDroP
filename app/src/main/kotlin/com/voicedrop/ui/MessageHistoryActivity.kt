@@ -145,7 +145,36 @@ class MessageHistoryActivity : AppCompatActivity() {
 
         val fab = findViewById<FloatingActionButton>(R.id.fab_record_in_chat)
         EdgeToEdgeSetup.applyBottomInset(fab)
-        fab.setOnClickListener { onRecordToggle(fab) }
+        val slideTrack = findViewById<View>(R.id.slide_to_cancel_track)
+        val gestureDetector = RecordGestureDetector(
+            view = fab,
+            onStart = { startRecording() },
+            onStop = {
+                // Mirrors the legacy tap-stop path: in-chat FAB only stops if WE are
+                // the active-recording target. The "recording for someone else" snackbar
+                // remains in onRecordToggle; we still dispatch through it for that branch.
+                onRecordToggle(fab)
+            },
+            onCancel = {
+                startForegroundService(VoiceDropService.recordCancelIntent(this))
+                slideTrack.visibility = View.GONE
+            },
+            isRecording = {
+                val s = ServiceState.recordingState.value
+                s.state == ServiceState.State.RECORDING && s.activeContactIds.contains(contactId)
+            },
+            onSlideProgress = { progress ->
+                if (progress > 0f) {
+                    slideTrack.visibility = View.VISIBLE
+                    slideTrack.alpha = 0.3f + (0.7f * progress)
+                    fab.translationX = -fab.width * progress * 0.6f
+                } else {
+                    slideTrack.visibility = View.GONE
+                    fab.translationX = 0f
+                }
+            },
+        )
+        fab.setOnTouchListener(gestureDetector)
         scope.launch {
             ServiceState.recordingState.collectLatest { state ->
                 updateFabState(fab, state)
