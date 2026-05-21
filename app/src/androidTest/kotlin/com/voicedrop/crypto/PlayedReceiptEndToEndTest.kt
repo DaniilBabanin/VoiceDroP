@@ -135,22 +135,21 @@ class PlayedReceiptEndToEndTest {
         val handlerRef = PlayedInboundHandler(alice.db)
         val aliceContactId = alice.contactId   // Bob's fp as seen from Alice = alice.contactId
 
-        var handlerOutcome: PlayedInboundHandler.Outcome? = null
+        var capturedTargetUuid: UUID? = null
         val result = aliceDec.receive(
             alice.contactId,
             (FrameCodec.decode(sent.wireBytes) as FrameCodec.DecodeResult.Ok).frame
         ) { plaintext, _, _, _ ->
             val parsed = MessagePayload.parse(plaintext)
             assertTrue("inner plaintext must be Parsed.Played", parsed is MessagePayload.Parsed.Played)
-            val played = parsed as MessagePayload.Parsed.Played
-            runBlocking {
-                handlerOutcome = handlerRef.onPlayedDecrypted(aliceContactId, played.targetUuid)
-            }
+            capturedTargetUuid = (parsed as MessagePayload.Parsed.Played).targetUuid
             // KIND_PLAYED frames do not create an inbound message row.
             null
         }
 
         assertTrue("receive must deliver the frame", result is RatchetDecryptAndPersist.Result.Delivered)
+        // Mutex is now released — safe to call handler (mirrors postDeliveredSideEffects).
+        val handlerOutcome = handlerRef.onPlayedDecrypted(aliceContactId, capturedTargetUuid!!)
         assertSame("handler must return Played", PlayedInboundHandler.Outcome.Played, handlerOutcome)
 
         val row = alice.db.messageDao().getByUuid(hex32)
@@ -191,21 +190,20 @@ class PlayedReceiptEndToEndTest {
         val handlerRef = PlayedInboundHandler(alice.db)
         val aliceContactId = alice.contactId
 
-        var handlerOutcome: PlayedInboundHandler.Outcome? = null
+        var capturedTargetUuid: UUID? = null
         val result = aliceDec.receive(
             alice.contactId,
             (FrameCodec.decode(sent.wireBytes) as FrameCodec.DecodeResult.Ok).frame
         ) { plaintext, _, _, _ ->
             val parsed = MessagePayload.parse(plaintext)
             assertTrue("inner plaintext must be Parsed.Played", parsed is MessagePayload.Parsed.Played)
-            val played = parsed as MessagePayload.Parsed.Played
-            runBlocking {
-                handlerOutcome = handlerRef.onPlayedDecrypted(aliceContactId, played.targetUuid)
-            }
+            capturedTargetUuid = (parsed as MessagePayload.Parsed.Played).targetUuid
             null
         }
 
         assertTrue("receive must deliver the frame", result is RatchetDecryptAndPersist.Result.Delivered)
+        // Mutex is now released — safe to call handler (mirrors postDeliveredSideEffects).
+        val handlerOutcome = handlerRef.onPlayedDecrypted(aliceContactId, capturedTargetUuid!!)
         assertSame("handler must return NoChange for DELETED row", PlayedInboundHandler.Outcome.NoChange, handlerOutcome)
 
         val row = alice.db.messageDao().getByUuid(hex32)
