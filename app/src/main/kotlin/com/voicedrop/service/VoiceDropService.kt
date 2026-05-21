@@ -18,6 +18,7 @@ import com.voicedrop.crypto.Bootstrap
 import com.voicedrop.crypto.KeyManager
 import com.voicedrop.crypto.RatchetDecryptAndPersist
 import com.voicedrop.crypto.RatchetEncryptAndSend
+import com.voicedrop.crypto.MessagePayload
 import com.voicedrop.crypto.PlayedInboundHandler
 import com.voicedrop.crypto.ReceiptInboundHandler
 import com.voicedrop.crypto.ResetReceive
@@ -45,6 +46,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.IOException
+import java.util.UUID
 
 class VoiceDropService : Service() {
 
@@ -401,7 +403,21 @@ class VoiceDropService : Service() {
                     } else null,
                 )
 
+                // Spec 16-played-receipt.md §3 — fire KIND_PLAYED to the sender on
+                // first inbound play. Guard order matters: read state BEFORE update.
+                val isFirstPlay = message.direction == MessageEntity.DIRECTION_INBOUND &&
+                    message.state != MessageEntity.STATE_PLAYED
                 repository.updateMessageState(uuid, MessageEntity.STATE_PLAYED)
+                if (isFirstPlay) {
+                    runCatching {
+                        ratchetSender.encryptAndSend(
+                            message.contactId,
+                            MessagePayload.encodePlayed(UUID.fromString(uuid))
+                        ) { _, _, _ -> null }
+                    }.onFailure { t ->
+                        Log.w(TAG, "PLAYED enqueue failed contact=${message.contactId.take(8)} uuid=${uuid.take(8)}: ${t.message}")
+                    }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Playback failed", e)
             } finally {
