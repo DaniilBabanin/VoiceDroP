@@ -379,13 +379,22 @@ class VoiceDropService : Service() {
 
                 notificationHelper.updatePlaybackProgress(notifId, 0, message.durationMs)
 
-                audioPlayer.play(opusBytes) { progress ->
-                    ServiceState.setPlayingProgress(progress)
-                    val elapsed = (progress * message.durationMs).toInt()
-                    scope.launch {
-                        notificationHelper.updatePlaybackProgress(notifId, elapsed, message.durationMs)
-                    }
-                }
+                val needsPeaks = message.waveformPeaks == null
+                audioPlayer.play(
+                    opusStream = opusBytes,
+                    onProgress = { progress ->
+                        ServiceState.setPlayingProgress(progress)
+                        val elapsed = (progress * message.durationMs).toInt()
+                        scope.launch {
+                            notificationHelper.updatePlaybackProgress(notifId, elapsed, message.durationMs)
+                        }
+                    },
+                    onPeaksReady = if (needsPeaks) {
+                        { peaks ->
+                            scope.launch { repository.updateWaveformPeaks(uuid, peaks) }
+                        }
+                    } else null,
+                )
 
                 repository.updateMessageState(uuid, MessageEntity.STATE_PLAYED)
             } catch (e: Exception) {

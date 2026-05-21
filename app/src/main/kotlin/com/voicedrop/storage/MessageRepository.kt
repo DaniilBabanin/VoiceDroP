@@ -38,6 +38,9 @@ class MessageRepository(
     suspend fun updateTransport(uuid: String, transport: TransportType) =
         messageDao.updateTransport(uuid, transport)
 
+    suspend fun updateWaveformPeaks(uuid: String, peaks: ByteArray): Int =
+        messageDao.updateWaveformPeaks(uuid, peaks)
+
     suspend fun markDeleted(uuid: String) = messageDao.markDeleted(uuid)
 
     suspend fun getMessage(uuid: String): MessageEntity? = messageDao.getByUuid(uuid)
