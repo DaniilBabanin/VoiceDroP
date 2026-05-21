@@ -11,6 +11,8 @@ class MessageRepository(
     // Contacts
     fun getAllContacts(): Flow<List<ContactEntity>> = contactDao.getAll()
 
+    fun getAllContactsWithMeta(): Flow<List<ContactRowMeta>> = contactDao.getAllWithMeta()
+
     suspend fun getContact(id: String): ContactEntity? = contactDao.getById(id)
 
     suspend fun upsertContact(contact: ContactEntity) = contactDao.upsert(contact)
