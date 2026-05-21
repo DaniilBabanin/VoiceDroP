@@ -67,21 +67,26 @@ class TalkTileService : TileService() {
                             showDialog(ContactPickerDialog(this@TalkTileService, emptyList()) {})
                             return@launch
                         }
-                        val target = ActiveContactsPrefs.resolveRecipient(
+                        // Fan-out target: every checked contact whose ratchet has learned dhr_pub.
+                        // DR17.5 W4 — skip contacts whose dhr_pub is still null (Bob mid-bootstrap).
+                        val eligible = ActiveContactsPrefs.resolveRecipients(
                             this@TalkTileService, contacts
-                        ) ?: return@launch
-                        // DR17.5 W4 — silent record gating. The default-recipient may be
-                        // freshly paired without `dhr_pub` (Bob waiting for Alice's HELLO);
-                        // recording would throw AwaitingFirstReceive on send. Show the
-                        // picker instead so user can pick a different contact (or wait).
-                        if (target.dhr_pub == null) {
-                            Log.i(TAG, "onClick: default target ${target.id.take(8)} not yet bootstrapped — showing picker")
-                            showDialog(ContactPickerDialog(this@TalkTileService, contacts) { id ->
-                                startRecording(id)
-                            })
+                        ).filter { it.dhr_pub != null }
+                        if (eligible.isNotEmpty()) {
+                            startRecordingFanOut(eligible.map { it.id })
                             return@launch
                         }
-                        startRecording(target.id)
+                        // No eligible recipients in the active set — fall back to the picker
+                        // so the user can pick a different contact or wait for pairing.
+                        if (contacts.any { it.dhr_pub != null }) {
+                            Log.i(TAG, "onClick: no eligible checked recipients — showing picker")
+                            showDialog(ContactPickerDialog(this@TalkTileService, contacts) { id ->
+                                startRecordingFanOut(listOf(id))
+                            })
+                        } else {
+                            Log.i(TAG, "onClick: no contacts bootstrapped yet")
+                            showDialog(ContactPickerDialog(this@TalkTileService, contacts) {})
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "onClick coroutine failed", e)
                     }
@@ -90,15 +95,16 @@ class TalkTileService : TileService() {
         }
     }
 
-    private fun startRecording(contactId: String) {
+    private fun startRecordingFanOut(contactIds: List<String>) {
+        if (contactIds.isEmpty()) return
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
         ) {
-            startForegroundService(VoiceDropService.recordStartIntent(this, contactId))
+            startForegroundService(VoiceDropService.recordStartAllIntent(this, contactIds))
         } else {
             val intent = Intent(this, PermissionActivity::class.java).apply {
                 action = VoiceDropService.ACTION_RECORD_START
-                putExtra(VoiceDropService.EXTRA_CONTACT_ID, contactId)
+                putExtra(VoiceDropService.EXTRA_CONTACT_IDS, contactIds.toTypedArray())
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             startTileActivity(intent)
@@ -133,11 +139,12 @@ class TalkTileService : TileService() {
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_tile_idle)
                 scope.launch {
                     val contacts = repository.getAllContacts().first()
-                    val target = ActiveContactsPrefs.resolveRecipient(this@TalkTileService, contacts)
+                    val recipients = ActiveContactsPrefs.resolveRecipients(this@TalkTileService, contacts)
                     tile.label = when {
                         contacts.isEmpty() -> "No contacts"
-                        target != null -> target.name
-                        else -> "VoiceDrop"
+                        recipients.isEmpty() -> "VoiceDrop"
+                        recipients.size == 1 -> recipients.first().name
+                        else -> "${recipients.size} recipients"
                     }
                     tile.updateTile()
                 }

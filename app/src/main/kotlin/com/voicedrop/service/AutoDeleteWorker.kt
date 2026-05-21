@@ -10,7 +10,6 @@ import com.voicedrop.notification.NotificationHelper
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.MessageRepository
-import java.io.File
 import java.util.concurrent.TimeUnit
 
 class AutoDeleteWorker(context: Context, params: WorkerParameters) :
@@ -34,10 +33,9 @@ class AutoDeleteWorker(context: Context, params: WorkerParameters) :
         val now = System.currentTimeMillis()
         val scheduled = repository.getScheduledDeletes(now)
         for (message in scheduled) {
-            message.encryptedFilePath?.let { path ->
-                secureDelete(File(path))
-            }
-            repository.markDeleted(message.uuid)
+            // Refcount-aware: shared fan-out blobs are preserved until the
+            // last recipient's row is deleted.
+            repository.markDeletedWithBlobRefcount(message)
             notificationHelper.cancelNotification(message.uuid.hashCode())
         }
     }
@@ -54,26 +52,6 @@ class AutoDeleteWorker(context: Context, params: WorkerParameters) :
                     repository.updateMessageState(message.uuid, MessageEntity.STATE_UNDELIVERABLE)
                 }
             }
-        }
-    }
-
-    private fun secureDelete(file: File) {
-        if (!file.exists()) return
-        try {
-            val length = file.length()
-            if (length > 0) {
-                file.outputStream().use { out ->
-                    val zeros = ByteArray(minOf(length, 65536).toInt())
-                    var remaining = length
-                    while (remaining > 0) {
-                        val toWrite = minOf(remaining, zeros.size.toLong()).toInt()
-                        out.write(zeros, 0, toWrite)
-                        remaining -= toWrite
-                    }
-                }
-            }
-        } finally {
-            file.delete()
         }
     }
 

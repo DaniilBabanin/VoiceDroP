@@ -16,14 +16,14 @@
             android:id="@+id/verify_title"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textAppearance="?attr/textAppearanceHeadline6"/>
+            android:textAppearance="?attr/textAppearanceTitleLarge"/>
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
             android:text="@string/verification_intro"
-            android:textAppearance="?attr/textAppearanceBody1"/>
+            android:textAppearance="?attr/textAppearanceBodyLarge"/>
 
         <TextView
             android:id="@+id/verify_emojis"
@@ -32,14 +32,13 @@
             android:layout_marginTop="16dp"
             android:layout_marginBottom="16dp"
             android:gravity="center"
-            android:textSize="48sp"
-            android:letterSpacing="0.1"/>
+            android:textSize="48sp"/>
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/verification_compare_hint"
-            android:textAppearance="?attr/textAppearanceBody2"/>
+            android:textAppearance="?attr/textAppearanceBodyMedium"/>
 
         <ImageView
             android:id="@+id/verify_qr_thumbnail"
@@ -55,7 +54,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
             android:text="@string/verification_consent"
-            android:textAppearance="?attr/textAppearanceCaption"
+            android:textAppearance="?attr/textAppearanceLabelSmall"
             android:alpha="0.7"/>
 
         <Button

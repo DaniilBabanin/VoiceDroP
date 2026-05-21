@@ -3,8 +3,14 @@ package com.voicedrop.ui
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
@@ -15,13 +21,17 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.color.MaterialColors
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.voicedrop.R
 import com.voicedrop.crypto.AeadFailureSoftPrompt
 import com.voicedrop.service.AutoDeleteWorker
 import com.voicedrop.service.VoiceDropService
+import com.voicedrop.storage.ActiveContactsPrefs
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.ContactEntity
+import com.voicedrop.storage.ContactRowMeta
+import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.MessageRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,9 +41,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 
 class ContactListActivity : AppCompatActivity() {
 
@@ -43,6 +54,10 @@ class ContactListActivity : AppCompatActivity() {
     private lateinit var recyclerView: RecyclerView
     private lateinit var aeadSoftPrompt: AeadFailureSoftPrompt
     private var aeadBannerPollJob: Job? = null
+
+    // Captured on the main thread in onCreate so the Dispatchers.Default
+    // preview-builder doesn't touch the View hierarchy / theme from a worker.
+    private var tertiaryColor: Int = Color.CYAN
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -55,6 +70,7 @@ class ContactListActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_contact_list)
+        EdgeToEdgeSetup.apply(this)
         requestMissingPermissions()
 
         val db = AppDatabase.getInstance(this)
@@ -66,8 +82,14 @@ class ContactListActivity : AppCompatActivity() {
             startForegroundService(Intent(this, VoiceDropService::class.java))
         }
 
-        val toolbar = findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar)
+        val toolbar = findViewById<com.google.android.material.appbar.MaterialToolbar>(R.id.toolbar)
         setSupportActionBar(toolbar)
+
+        tertiaryColor = MaterialColors.getColor(
+            toolbar,
+            com.google.android.material.R.attr.colorTertiary,
+            Color.CYAN
+        )
 
         adapter = ContactAdapter { contactId ->
             scope.launch {
@@ -85,7 +107,7 @@ class ContactListActivity : AppCompatActivity() {
         recyclerView.adapter = adapter
         setupSwipeToDelete()
 
-        val emptyState = findViewById<TextView>(R.id.text_empty_state)
+        val emptyState = findViewById<View>(R.id.empty_state_contacts)
         val fab = findViewById<FloatingActionButton>(R.id.fab_add_contact)
         fab.setOnClickListener {
             if (isSignalingUrlConfigured()) {
@@ -94,22 +116,111 @@ class ContactListActivity : AppCompatActivity() {
                 showSignalingUrlRequiredDialog()
             }
         }
+        emptyState.findViewById<com.google.android.material.button.MaterialButton>(
+            R.id.button_empty_state_pair
+        ).setOnClickListener { fab.callOnClick() }
+        EdgeToEdgeSetup.applyBottomInset(fab)
 
         checkOnboarding()
 
         scope.launch {
-            repository.getAllContacts().collectLatest { contacts ->
-                if (contacts.isEmpty()) {
-                    emptyState.visibility = View.VISIBLE
-                    recyclerView.visibility = View.GONE
-                } else {
-                    emptyState.visibility = View.GONE
-                    recyclerView.visibility = View.VISIBLE
-                    adapter.submitList(contacts)
+            repository.getAllContactsWithMeta()
+                .map { metas -> metas.map { buildUiState(it) } }
+                .flowOn(Dispatchers.Default)
+                .collectLatest { uiStates ->
+                    if (uiStates.isEmpty()) {
+                        emptyState.visibility = View.VISIBLE
+                        recyclerView.visibility = View.GONE
+                    } else {
+                        emptyState.visibility = View.GONE
+                        recyclerView.visibility = View.VISIBLE
+                        adapter.submitList(uiStates)
+                    }
                 }
-            }
         }
         startAeadBannerPolling()
+    }
+
+    /**
+     * §A — projects a [ContactRowMeta] DAO row into the [ContactRowUiState] the
+     * adapter consumes. Runs on Dispatchers.Default; touches the avatar LRU
+     * cache and a few SharedPreferences reads (active-contact set), both
+     * thread-safe.
+     */
+    private fun buildUiState(meta: ContactRowMeta): ContactRowUiState {
+        val ctx = this
+        val avatar = AvatarFactory.forContact(ctx, meta.contact.id, meta.contact.name)
+        val preview = buildPreviewText(meta)
+        val timestamp = RelativeTime.format(meta.lastMessageAt, System.currentTimeMillis())
+        val isActive = ActiveContactsPrefs.getActiveIds(ctx).contains(meta.contact.id)
+        return ContactRowUiState(
+            id = meta.contact.id,
+            name = meta.contact.name,
+            avatarDrawable = avatar,
+            previewText = preview,
+            timestampText = timestamp,
+            badgeCount = meta.unreadCount,
+            isActive = isActive,
+        )
+    }
+
+    /**
+     * §A — preview-text builder. Empty-history rows render the localized italic
+     * onboarding hint; otherwise a glyph + duration line with weight/colour cues
+     * that mirror [MessageAdapter]'s in-bubble glyphs.
+     */
+    private fun buildPreviewText(meta: ContactRowMeta): CharSequence {
+        val ctx = this
+        val direction = meta.lastMessageDirection
+        val state = meta.lastMessageState
+        val durationMs = meta.lastMessageDurationMs
+        if (direction == null || state == null || durationMs == null) {
+            val empty = ctx.getString(R.string.contact_preview_no_messages)
+            val sb = SpannableStringBuilder(empty)
+            sb.setSpan(StyleSpan(Typeface.ITALIC), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            return sb
+        }
+        val sb = SpannableStringBuilder()
+        val duration = formatDurationShort(durationMs)
+        if (direction == MessageEntity.DIRECTION_OUTBOUND) {
+            when (state) {
+                MessageEntity.STATE_OUTBOX -> sb.append("…  ")
+                MessageEntity.STATE_SENT -> sb.append("✓  ")
+                MessageEntity.STATE_DELIVERED -> sb.append("✓✓  ")
+                MessageEntity.STATE_PLAYED -> {
+                    val start = sb.length
+                    sb.append("✓✓")
+                    sb.setSpan(
+                        ForegroundColorSpan(tertiaryColor),
+                        start, sb.length,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                    )
+                    sb.append("  ")
+                }
+                MessageEntity.STATE_UNDELIVERABLE -> sb.append("!  ")
+                else -> { /* nothing */ }
+            }
+            sb.append(duration)
+        } else {
+            val unread = state == MessageEntity.STATE_SENT || state == MessageEntity.STATE_DELIVERED
+            if (unread) {
+                val start = sb.length
+                sb.append("↓ ").append(duration)
+                sb.setSpan(
+                    StyleSpan(Typeface.BOLD),
+                    start, sb.length,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            } else {
+                sb.append(duration)
+            }
+        }
+        return sb
+    }
+
+    private fun formatDurationShort(ms: Int): String {
+        val totalSecs = ms / 1000
+        return "%d:%02d".format(totalSecs / 60, totalSecs % 60)
     }
 
     /**
@@ -211,19 +322,25 @@ class ContactListActivity : AppCompatActivity() {
             override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
                 val position = viewHolder.adapterPosition
                 if (position == RecyclerView.NO_POSITION) return
-                val contact = adapter.currentList[position]
-                showDeleteConfirmation(contact, position)
+                val row = adapter.currentList[position]
+                showDeleteConfirmation(row.id, row.name, position)
             }
         }
         ItemTouchHelper(swipeCallback).attachToRecyclerView(recyclerView)
     }
 
-    private fun showDeleteConfirmation(contact: ContactEntity, position: Int) {
+    private fun showDeleteConfirmation(contactId: String, contactName: String, position: Int) {
         AlertDialog.Builder(this)
             .setTitle(R.string.delete_contact_title)
-            .setMessage(getString(R.string.delete_contact_message, contact.name))
+            .setMessage(getString(R.string.delete_contact_message, contactName))
             .setPositiveButton(R.string.delete) { _, _ ->
-                scope.launch { deleteContact(contact) }
+                scope.launch {
+                    // Re-fetch by id because the swipe callback only has the UiState.
+                    // If the row vanished between swipe and confirm (rare: re-pair, etc.)
+                    // there's nothing left to delete.
+                    val entity = repository.getContact(contactId) ?: return@launch
+                    deleteContact(entity)
+                }
             }
             .setNegativeButton(android.R.string.cancel) { _, _ ->
                 adapter.notifyItemChanged(position)
@@ -234,34 +351,12 @@ class ContactListActivity : AppCompatActivity() {
 
     private suspend fun deleteContact(contact: ContactEntity) {
         withContext(Dispatchers.IO) {
-            val messages = repository.getMessagesForContact(contact.id)
-            for (message in messages) {
-                message.encryptedFilePath?.let { secureDelete(File(it)) }
-            }
-            File(filesDir, "messages/${contact.id}").listFiles()?.forEach { secureDelete(it) }
+            // Refcount-aware: opus files shared with other contacts' rows are preserved.
+            repository.deleteAllMessagesForContactWithBlobCleanup(contact.id)
         }
         repository.deleteContact(contact)
         VoiceDropWidgetProvider.refreshAll(this@ContactListActivity)
-    }
-
-    private fun secureDelete(file: File) {
-        if (!file.exists()) return
-        try {
-            val length = file.length()
-            if (length > 0) {
-                file.outputStream().use { out ->
-                    val zeros = ByteArray(minOf(length, 65536).toInt())
-                    var remaining = length
-                    while (remaining > 0) {
-                        val toWrite = minOf(remaining, zeros.size.toLong()).toInt()
-                        out.write(zeros, 0, toWrite)
-                        remaining -= toWrite
-                    }
-                }
-            }
-        } finally {
-            file.delete()
-        }
+        AllWidgetProvider.refreshAll(this@ContactListActivity)
     }
 
     private fun isSignalingUrlConfigured(): Boolean {

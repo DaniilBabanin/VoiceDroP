@@ -73,7 +73,7 @@ class VoiceDropWidgetProvider : AppWidgetProvider() {
 
             val isRecordingThisContact =
                 serviceState.state == ServiceState.State.RECORDING &&
-                    serviceState.activeContactId == contactId
+                    contactId in serviceState.activeContactIds
 
             if (isRecordingThisContact) {
                 val views = renderRecording(
@@ -100,7 +100,7 @@ class VoiceDropWidgetProvider : AppWidgetProvider() {
                 // Re-check state — service could have flipped to recording while we were loading.
                 val nowState = ServiceState.recordingState.value
                 if (nowState.state == ServiceState.State.RECORDING &&
-                    nowState.activeContactId == contactId
+                    contactId in nowState.activeContactIds
                 ) {
                     val v = renderRecording(context, widgetId, nowState.startedAtElapsedRealtime)
                     appWidgetManager.updateAppWidget(widgetId, v)
@@ -124,7 +124,7 @@ class VoiceDropWidgetProvider : AppWidgetProvider() {
 
         private fun renderUnbound(context: Context, widgetId: Int): RemoteViews {
             val views = RemoteViews(context.packageName, R.layout.widget_voicedrop)
-            views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_voicedrop_bg)
+            views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_droplet_bg)
             views.setImageViewResource(R.id.widget_icon, R.drawable.ic_widget_droplet)
             views.setViewVisibility(R.id.widget_label, View.VISIBLE)
             views.setViewVisibility(R.id.widget_timer, View.GONE)
@@ -136,7 +136,7 @@ class VoiceDropWidgetProvider : AppWidgetProvider() {
 
         private fun renderMissing(context: Context, widgetId: Int): RemoteViews {
             val views = RemoteViews(context.packageName, R.layout.widget_voicedrop)
-            views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_voicedrop_bg)
+            views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_droplet_bg)
             views.setImageViewResource(R.id.widget_icon, R.drawable.ic_widget_droplet)
             views.setViewVisibility(R.id.widget_label, View.VISIBLE)
             views.setViewVisibility(R.id.widget_timer, View.GONE)
@@ -153,7 +153,7 @@ class VoiceDropWidgetProvider : AppWidgetProvider() {
             label: String,
         ): RemoteViews {
             val views = RemoteViews(context.packageName, R.layout.widget_voicedrop)
-            views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_voicedrop_bg)
+            views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_droplet_bg)
             views.setImageViewResource(R.id.widget_icon, R.drawable.ic_widget_droplet)
             views.setViewVisibility(R.id.widget_label, View.VISIBLE)
             views.setViewVisibility(R.id.widget_timer, View.GONE)
@@ -172,7 +172,7 @@ class VoiceDropWidgetProvider : AppWidgetProvider() {
             startedAtElapsedRealtime: Long,
         ): RemoteViews {
             val views = RemoteViews(context.packageName, R.layout.widget_voicedrop)
-            views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_voicedrop_bg_recording)
+            views.setInt(R.id.widget_root, "setBackgroundResource", R.drawable.widget_droplet_bg_recording)
             views.setImageViewResource(R.id.widget_icon, R.drawable.ic_widget_stop)
             views.setViewVisibility(R.id.widget_label, View.GONE)
             views.setViewVisibility(R.id.widget_timer, View.VISIBLE)

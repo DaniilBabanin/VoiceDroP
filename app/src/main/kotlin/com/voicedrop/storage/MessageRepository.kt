@@ -1,6 +1,7 @@
 package com.voicedrop.storage
 
 import kotlinx.coroutines.flow.Flow
+import java.io.File
 
 class MessageRepository(
     private val contactDao: ContactDao,
@@ -9,6 +10,8 @@ class MessageRepository(
 ) {
     // Contacts
     fun getAllContacts(): Flow<List<ContactEntity>> = contactDao.getAll()
+
+    fun getAllContactsWithMeta(): Flow<List<ContactRowMeta>> = contactDao.getAllWithMeta()
 
     suspend fun getContact(id: String): ContactEntity? = contactDao.getById(id)
 
@@ -37,6 +40,9 @@ class MessageRepository(
     suspend fun updateTransport(uuid: String, transport: TransportType) =
         messageDao.updateTransport(uuid, transport)
 
+    suspend fun updateWaveformPeaks(uuid: String, peaks: ByteArray): Int =
+        messageDao.updateWaveformPeaks(uuid, peaks)
+
     suspend fun markDeleted(uuid: String) = messageDao.markDeleted(uuid)
 
     suspend fun getMessage(uuid: String): MessageEntity? = messageDao.getByUuid(uuid)
@@ -49,6 +55,68 @@ class MessageRepository(
 
     suspend fun getExpiredOutbox(olderThanMs: Long): List<MessageEntity> =
         messageDao.getExpiredOutbox(olderThanMs)
+
+    /**
+     * Hard-delete a message row and, if no other row references the same
+     * on-disk opus file, secure-delete the file. The refcount makes fan-out
+     * safe: N rows can share one file; only the last delete removes the bytes.
+     */
+    suspend fun deleteMessageWithBlobCleanup(message: MessageEntity) {
+        val path = message.encryptedFilePath
+        messageDao.deleteByUuid(message.uuid)
+        if (path != null) {
+            val remaining = messageDao.countByEncryptedFilePath(path)
+            if (remaining == 0) secureDeleteFile(File(path))
+        }
+    }
+
+    /**
+     * Used by the contact-delete cascade: enumerate every message row for the
+     * contact and hard-delete each via [deleteMessageWithBlobCleanup] so any
+     * fanned-out opus files referenced by another contact's row are preserved.
+     */
+    suspend fun deleteAllMessagesForContactWithBlobCleanup(contactId: String) {
+        val messages = messageDao.getByContactList(contactId)
+        for (m in messages) deleteMessageWithBlobCleanup(m)
+    }
+
+    /**
+     * Soft-delete a single message row (sets STATE_DELETED, nulls path) and,
+     * if no other row still references the same on-disk opus file, secure-wipe
+     * the file. Refcount-safe replacement for the bare `secureDelete(file)` +
+     * `markDeleted(uuid)` pair used by per-message deletes (notification swipe,
+     * scheduled auto-delete) — without this, a fanned-out blob shared by N
+     * recipients would be wiped on the first recipient's delete, breaking
+     * playback for the rest.
+     */
+    suspend fun markDeletedWithBlobRefcount(message: MessageEntity) {
+        val path = message.encryptedFilePath
+        messageDao.markDeleted(message.uuid)
+        if (path != null) {
+            val remaining = messageDao.countByEncryptedFilePath(path)
+            if (remaining == 0) secureDeleteFile(File(path))
+        }
+    }
+
+    private fun secureDeleteFile(file: File) {
+        if (!file.exists()) return
+        try {
+            val length = file.length()
+            if (length > 0) {
+                file.outputStream().use { out ->
+                    val zeros = ByteArray(minOf(length, 65536).toInt())
+                    var remaining = length
+                    while (remaining > 0) {
+                        val toWrite = minOf(remaining, zeros.size.toLong()).toInt()
+                        out.write(zeros, 0, toWrite)
+                        remaining -= toWrite
+                    }
+                }
+            }
+        } finally {
+            file.delete()
+        }
+    }
 
     // Pending actions
     suspend fun insertPendingAction(action: PendingActionEntity): Long =

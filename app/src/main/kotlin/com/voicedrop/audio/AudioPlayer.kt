@@ -17,7 +17,20 @@ class AudioPlayer {
     private val sampleRate = 16000
     private var playJob: Job? = null
 
-    suspend fun play(opusStream: ByteArray, onProgress: (Float) -> Unit = {}): Unit =
+    /**
+     * Decode an opus stream and play it through AudioTrack.
+     *
+     * @param onPeaksReady invoked once on **natural completion** (not cancellation)
+     *   with a downsampled waveform built from per-packet PCM peaks. Skipped if
+     *   null — callers pass null when the message already has peaks stored, so the
+     *   accumulator stays cold for the hot path. See Phase F of the 2026-05 design
+     *   refresh: this fuels lazy backfill for messages predating v1.4.0.3.
+     */
+    suspend fun play(
+        opusStream: ByteArray,
+        onProgress: (Float) -> Unit = {},
+        onPeaksReady: ((ByteArray) -> Unit)? = null,
+    ): Unit =
         withContext(Dispatchers.IO) {
             val decoder = OpusDecoder()
             decoder.init(sampleRate, 1)
@@ -42,6 +55,8 @@ class AudioPlayer {
             val input = ByteArrayInputStream(opusStream)
             val totalSize = opusStream.size.toFloat()
             var consumed = 0
+            val accumulator = if (onPeaksReady != null) PeakAccumulator() else null
+            var reachedNaturalEnd = false
 
             try {
                 val lenBuf = ByteArray(4)
@@ -54,16 +69,25 @@ class AudioPlayer {
                     if (input.read(packetBuf) != packetSize) break
 
                     val pcm = decoder.decode(packetBuf)
+                    accumulator?.feed(pcm, pcm.size)
                     val bytes = shortsToBytes(pcm)
                     audioTrack.write(bytes, 0, bytes.size)
 
                     consumed += 4 + packetSize
                     onProgress(consumed / totalSize)
                 }
+                // Loop exited because the stream is drained, not via cancellation
+                // or a short read on a framing boundary. Only the drained case is
+                // safe to treat as "we saw every frame" for the peak backfill.
+                if (isActive && input.available() == 0) reachedNaturalEnd = true
             } finally {
                 audioTrack.stop()
                 audioTrack.release()
                 decoder.release()
+            }
+
+            if (reachedNaturalEnd && accumulator != null && onPeaksReady != null) {
+                onPeaksReady(accumulator.build())
             }
         }
 

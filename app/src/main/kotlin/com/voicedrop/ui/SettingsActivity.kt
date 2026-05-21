@@ -5,25 +5,20 @@ import android.os.Bundle
 import android.util.Log
 import android.view.MenuItem
 import android.widget.Button
-import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.widget.SwitchCompat
-import androidx.appcompat.widget.Toolbar
+import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.materialswitch.MaterialSwitch
+import com.google.android.material.textfield.TextInputEditText
 import com.mikepenz.aboutlibraries.LibsBuilder
 import com.voicedrop.R
 import com.voicedrop.crypto.KeyManager
 import com.voicedrop.service.VoiceDropService
-import com.voicedrop.storage.ActiveContactsPrefs
-import com.voicedrop.storage.AppDatabase
-import com.voicedrop.storage.ContactEntity
-import com.voicedrop.storage.MessageRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class SettingsActivity : AppCompatActivity() {
@@ -41,24 +36,27 @@ class SettingsActivity : AppCompatActivity() {
             finish(); return
         }
 
-        val toolbar = findViewById<Toolbar>(R.id.toolbar)
+        val toolbar = findViewById<MaterialToolbar>(R.id.toolbar)
         setSupportActionBar(toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
+
+        EdgeToEdgeSetup.apply(this)
+        EdgeToEdgeSetup.applyTopInset(toolbar)
+        EdgeToEdgeSetup.applyBottomInset(findViewById(R.id.scroll_settings))
 
         val prefs = getSharedPreferences("voicedrop_settings", MODE_PRIVATE)
         val keyManager = KeyManager(this)
 
-        val displayNameEdit = findViewById<EditText>(R.id.edit_display_name)
+        val displayNameEdit = findViewById<TextInputEditText>(R.id.edit_display_name)
         displayNameEdit.setText(prefs.getString("display_name", ""))
 
-        val signalingUrlEdit = findViewById<EditText>(R.id.edit_signaling_url)
+        val signalingUrlEdit = findViewById<TextInputEditText>(R.id.edit_signaling_url)
         signalingUrlEdit.setText(prefs.getString("signaling_url", ""))
 
         val fingerprintText = findViewById<TextView>(R.id.text_my_fingerprint)
-        val fp = keyManager.getFingerprint()
-        fingerprintText.text = fp.chunked(8).joinToString(" ")
+        fingerprintText.text = FingerprintFormat.format(keyManager.getFingerprint())
 
-        val relaySwitch = findViewById<SwitchCompat>(R.id.switch_relay_fallback)
+        val relaySwitch = findViewById<MaterialSwitch>(R.id.switch_relay_fallback)
         relaySwitch.isChecked = prefs.getBoolean(PREF_RELAY_FALLBACK_ENABLED, true)
         relaySwitch.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean(PREF_RELAY_FALLBACK_ENABLED, isChecked).apply()
@@ -79,28 +77,6 @@ class SettingsActivity : AppCompatActivity() {
             startService(Intent(this, VoiceDropService::class.java).apply {
                 action = VoiceDropService.ACTION_RELOAD_CONFIG
             })
-        }
-
-        val defaultRecipientButton = findViewById<Button>(R.id.button_default_recipient)
-        val db = AppDatabase.getInstance(this)
-        val repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())
-
-        fun refreshDefaultRecipientLabel() {
-            scope.launch {
-                val contacts = repository.getAllContacts().first()
-                defaultRecipientButton.text = labelForDefaultRecipient(contacts)
-            }
-        }
-        refreshDefaultRecipientLabel()
-
-        defaultRecipientButton.setOnClickListener {
-            scope.launch {
-                val contacts = repository.getAllContacts().first()
-                ContactPickerDialog(this@SettingsActivity, contacts) { pickedId ->
-                    ActiveContactsPrefs.setDefaultId(this@SettingsActivity, pickedId)
-                    refreshDefaultRecipientLabel()
-                }.show()
-            }
         }
 
         findViewById<Button>(R.id.button_privacy_policy).setOnClickListener {
@@ -153,12 +129,6 @@ class SettingsActivity : AppCompatActivity() {
             return true
         }
         return super.onOptionsItemSelected(item)
-    }
-
-    private fun labelForDefaultRecipient(contacts: List<ContactEntity>): String {
-        if (contacts.isEmpty()) return getString(R.string.default_recipient_no_contacts)
-        val explicit = ActiveContactsPrefs.getDefault(this, contacts)
-        return explicit?.name ?: getString(R.string.default_recipient_none)
     }
 
     override fun onDestroy() {

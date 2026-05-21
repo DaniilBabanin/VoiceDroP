@@ -44,6 +44,11 @@ class MyQrFragment : Fragment() {
         val qrImageView = view.findViewById<ImageView>(R.id.image_qr)
         QrEncoder.encode(qrContent, 512)?.let { qrImageView.setImageBitmap(it) }
 
+        view.findViewById<android.widget.TextView>(R.id.text_fingerprint)?.let { fpText ->
+            val keyManager = KeyManager(view.context)
+            fpText.text = FingerprintFormat.format(keyManager.getFingerprint())
+        }
+
         view.findViewById<Button>(R.id.button_share_file)?.setOnClickListener {
             (activity as? QrPairActivity)?.shareAsFile()
         }

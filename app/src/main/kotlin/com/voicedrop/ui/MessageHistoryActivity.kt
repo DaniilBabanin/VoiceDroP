@@ -1,33 +1,42 @@
 package com.voicedrop.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
-import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.floatingactionbutton.FloatingActionButton
+import com.google.android.material.snackbar.Snackbar
 import com.google.crypto.tink.subtle.X25519
 import com.voicedrop.R
+import com.voicedrop.audio.PeakExtractor
 import com.voicedrop.audio.VoiceMessageShare
 import com.voicedrop.crypto.Bootstrap
 import com.voicedrop.crypto.KeyManager
 import com.voicedrop.crypto.ResetReceive
+import com.voicedrop.service.PermissionActivity
 import com.voicedrop.service.ServiceState
 import com.voicedrop.service.VoiceDropService
 import com.voicedrop.storage.AppDatabase
+import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.MessageRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 
 class MessageHistoryActivity : AppCompatActivity() {
 
@@ -42,14 +51,24 @@ class MessageHistoryActivity : AppCompatActivity() {
     // which is Main-confined, so no synchronisation required.
     private var cachedMyIdPub: ByteArray? = null
 
+    // Visible-window waveform backfill for legacy rows (peaks null). A single
+    // worker drains [peakRequests] serially so we never thrash CPU even when the
+    // user scrolls fast through a long history. Inflight uuids dedupe enqueues
+    // between the scroll listener and the post-submitList scan. Pure decode —
+    // no playback side effects (see PeakExtractor docstring).
+    private val peakExtractor = PeakExtractor()
+    private val peakRequests = Channel<String>(Channel.UNLIMITED)
+    private val peakInFlight: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_message_history)
+        EdgeToEdgeSetup.apply(this)
 
         contactId = intent.getStringExtra(EXTRA_CONTACT_ID) ?: run { finish(); return }
         val contactName = intent.getStringExtra(EXTRA_CONTACT_NAME) ?: contactId
 
-        val toolbar = findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar)
+        val toolbar = findViewById<com.google.android.material.appbar.MaterialToolbar>(R.id.toolbar)
         setSupportActionBar(toolbar)
         supportActionBar?.title = contactName
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
@@ -74,11 +93,20 @@ class MessageHistoryActivity : AppCompatActivity() {
         val layoutManager = LinearLayoutManager(this).apply { stackFromEnd = true }
         recyclerView.layoutManager = layoutManager
         recyclerView.adapter = adapter
+        EdgeToEdgeSetup.applyBottomInset(recyclerView)
 
-        val emptyState = findViewById<TextView>(R.id.text_empty_messages)
+        recyclerView.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                scanVisibleForPeakBackfill(layoutManager)
+            }
+        })
+
+        val emptyState = findViewById<View>(R.id.empty_state_messages)
 
         val db = AppDatabase.getInstance(this)
         repository = MessageRepository(db.contactDao(), db.messageDao(), db.pendingActionDao())
+
+        startPeakBackfillWorker()
 
         scope.launch {
             val (myIdPub, theirIdPub) = loadKeyPair() ?: return@launch
@@ -94,7 +122,10 @@ class MessageHistoryActivity : AppCompatActivity() {
                 } else {
                     emptyState.visibility = View.GONE
                     recyclerView.visibility = View.VISIBLE
-                    adapter.submitList(messages)
+                    adapter.submitList(messages) {
+                        // Layout has settled — visible positions are now real.
+                        scanVisibleForPeakBackfill(layoutManager)
+                    }
                     recyclerView.scrollToPosition(messages.size - 1)
                 }
             }
@@ -104,6 +135,151 @@ class MessageHistoryActivity : AppCompatActivity() {
             ServiceState.playingUuid.collectLatest { uuid ->
                 adapter.setPlayingUuid(uuid)
             }
+        }
+
+        scope.launch {
+            ServiceState.playingProgress.collectLatest { progress ->
+                adapter.setPlayingProgress(progress)
+            }
+        }
+
+        val fab = findViewById<FloatingActionButton>(R.id.fab_record_in_chat)
+        EdgeToEdgeSetup.applyBottomInset(fab)
+        fab.setOnClickListener { onRecordToggle(fab) }
+        scope.launch {
+            ServiceState.recordingState.collectLatest { state ->
+                updateFabState(fab, state)
+            }
+        }
+    }
+
+    /**
+     * Single-consumer drain of [peakRequests] — extracts peaks for one row at
+     * a time so a fast scroll through 200 legacy rows doesn't pin the CPU. Each
+     * iteration suspends into IO inside [PeakExtractor.extract], so the Main
+     * dispatcher we're hosted on isn't blocked. The DAO update is guarded by
+     * `waveformPeaks IS NULL`, so a concurrent playback-driven backfill (Phase
+     * F) and this worker can race harmlessly — first writer wins, second is a
+     * no-op.
+     */
+    private fun startPeakBackfillWorker() {
+        scope.launch {
+            for (uuid in peakRequests) {
+                try {
+                    val message = repository.getMessage(uuid) ?: continue
+                    if (message.waveformPeaks != null) continue
+                    val path = message.encryptedFilePath ?: continue
+                    if (message.state == MessageEntity.STATE_DELETED) continue
+                    val peaks = peakExtractor.extract(path) ?: continue
+                    repository.updateWaveformPeaks(uuid, peaks)
+                } finally {
+                    peakInFlight.remove(uuid)
+                }
+            }
+        }
+    }
+
+    /**
+     * Enqueue any currently-visible message rows whose `waveformPeaks` are
+     * still null. Called on every scroll event and after each list commit;
+     * dedupes via [peakInFlight] so the worker queue doesn't grow on repeated
+     * scroll-back. Rows with non-null peaks or no opus file are skipped. Does
+     * **not** mark the message as played — the only DB write is the peak blob.
+     */
+    private fun scanVisibleForPeakBackfill(layoutManager: LinearLayoutManager) {
+        val first = layoutManager.findFirstVisibleItemPosition()
+        val last = layoutManager.findLastVisibleItemPosition()
+        if (first == RecyclerView.NO_POSITION || last == RecyclerView.NO_POSITION) return
+        val list = adapter.currentList
+        for (i in first..last) {
+            if (i < 0 || i >= list.size) continue
+            val msg = list[i]
+            if (msg.waveformPeaks != null) continue
+            if (msg.encryptedFilePath == null) continue
+            if (msg.state == MessageEntity.STATE_DELETED) continue
+            if (!peakInFlight.add(msg.uuid)) continue
+            peakRequests.trySend(msg.uuid)
+        }
+    }
+
+    /**
+     * §B — FAB tap. Three states:
+     *   - IDLE: start recording for this contact (after a mic-permission check —
+     *     in practice always granted by the time the user reaches this screen,
+     *     but we still gate to match the widget's pattern and survive a revoke).
+     *   - RECORDING this contact: stop.
+     *   - RECORDING a different contact: refuse via Snackbar; the user is in the
+     *     wrong room for that "stop" tap.
+     */
+    private fun onRecordToggle(fab: FloatingActionButton) {
+        val state = ServiceState.recordingState.value
+        when {
+            state.state == ServiceState.State.IDLE -> startRecording()
+            state.state == ServiceState.State.RECORDING &&
+                state.activeContactIds.contains(contactId) -> {
+                startForegroundService(VoiceDropService.recordStopIntent(this))
+            }
+            state.state == ServiceState.State.RECORDING -> {
+                val otherId = state.activeContactIds.firstOrNull()
+                scope.launch {
+                    val otherName = otherId?.let { repository.getContact(it)?.name } ?: ""
+                    Snackbar.make(
+                        fab,
+                        getString(R.string.recording_other_contact, otherName),
+                        Snackbar.LENGTH_LONG
+                    ).show()
+                }
+            }
+            else -> { /* SENDING: ignore — short-lived */ }
+        }
+    }
+
+    private fun startRecording() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            val intent = Intent(this, PermissionActivity::class.java).apply {
+                action = VoiceDropService.ACTION_RECORD_START
+                putExtra(VoiceDropService.EXTRA_CONTACT_ID, contactId)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            }
+            startActivity(intent)
+            return
+        }
+        startForegroundService(VoiceDropService.recordStartIntent(this, contactId))
+    }
+
+    private fun updateFabState(fab: FloatingActionButton, state: ServiceState.RecordingState) {
+        val recordingThisContact = state.state == ServiceState.State.RECORDING &&
+            state.activeContactIds.contains(contactId)
+        if (recordingThisContact) {
+            fab.setImageResource(R.drawable.ic_stop_square)
+            fab.contentDescription = getString(R.string.action_stop)
+            fab.backgroundTintList = android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this, R.color.red_recording)
+            )
+            fab.imageTintList = android.content.res.ColorStateList.valueOf(
+                com.google.android.material.color.MaterialColors.getColor(
+                    fab, com.google.android.material.R.attr.colorOnError, android.graphics.Color.WHITE
+                )
+            )
+        } else {
+            fab.setImageResource(R.drawable.ic_mic)
+            fab.contentDescription = getString(R.string.action_record)
+            fab.backgroundTintList = android.content.res.ColorStateList.valueOf(
+                com.google.android.material.color.MaterialColors.getColor(
+                    fab,
+                    com.google.android.material.R.attr.colorPrimaryContainer,
+                    android.graphics.Color.GRAY
+                )
+            )
+            fab.imageTintList = android.content.res.ColorStateList.valueOf(
+                com.google.android.material.color.MaterialColors.getColor(
+                    fab,
+                    com.google.android.material.R.attr.colorOnPrimaryContainer,
+                    android.graphics.Color.WHITE
+                )
+            )
         }
     }
 
@@ -271,6 +447,9 @@ class MessageHistoryActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // Close the channel first so the for-loop exits cleanly, then cancel
+        // any in-flight decode the worker was on.
+        peakRequests.close()
         scope.cancel()
         super.onDestroy()
     }

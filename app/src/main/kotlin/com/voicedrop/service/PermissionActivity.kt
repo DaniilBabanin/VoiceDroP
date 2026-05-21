@@ -65,11 +65,15 @@ class PermissionActivity : AppCompatActivity() {
     }
 
     private fun dispatchIntent() {
+        val contactIds = intent?.getStringArrayExtra(VoiceDropService.EXTRA_CONTACT_IDS)?.toList()
         val contactId = intent?.getStringExtra(VoiceDropService.EXTRA_CONTACT_ID)
-        val serviceIntent = if (contactId != null) {
-            VoiceDropService.recordStartIntent(this, contactId)
-        } else {
-            VoiceDropService.recordStopIntent(this)
+        val serviceIntent = when {
+            !contactIds.isNullOrEmpty() ->
+                VoiceDropService.recordStartAllIntent(this, contactIds)
+            contactId != null ->
+                VoiceDropService.recordStartIntent(this, contactId)
+            else ->
+                VoiceDropService.recordStopIntent(this)
         }
         startForegroundService(serviceIntent)
     }

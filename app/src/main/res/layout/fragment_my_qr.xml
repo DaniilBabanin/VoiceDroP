@@ -20,8 +20,8 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
         android:fontFamily="monospace"
-        android:textAppearance="?attr/textAppearanceCaption"
-        android:textSize="10sp"/>
+        android:textAppearance="?attr/textAppearanceBodyMedium"
+        android:textSize="12sp"/>
 
     <Button
         android:id="@+id/button_share_file"
@@ -36,6 +36,6 @@
         android:layout_marginTop="20dp"
         android:gravity="center"
         android:text="@string/qr_pair_helper_text"
-        android:textAppearance="?attr/textAppearanceBody2"/>
+        android:textAppearance="?attr/textAppearanceBodyMedium"/>
 
 </LinearLayout>

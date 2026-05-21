@@ -32,8 +32,27 @@ data class MessageEntity(
     // DR3: sender-side ratchet delivery state. Receiver rows skip this entirely (always 0).
     // Transitions: 0 PENDING -> 1 DELIVERED on matching RECEIPT (dr11);
     //              0 PENDING -> 2 GAVE_UP on outbox give-up. Terminal once non-zero.
-    val delivery_state: Int = DELIVERY_PENDING
+    val delivery_state: Int = DELIVERY_PENDING,
+    // §D — cached waveform peaks for the playback bar. Lazily backfilled on first
+    // playback via MessageDao.updateWaveformPeaks; null for messages predating
+    // v1.4.0.3. Compact byte encoding: one unsigned byte per time-bucket spanning
+    // the recording, each byte = (|sample| / 32768) * 255 clamped 0..255. Produced
+    // by audio/PeakAccumulator (added in Phase B).
+    val waveformPeaks: ByteArray? = null
 ) {
+    // Equality by uuid only — ByteArray's reference-equality from the generated
+    // data-class equals would break DiffUtil and any dedup helpers as soon as
+    // Room re-emits a row with a freshly-read `waveformPeaks` instance. Mirrors
+    // ContactEntity's pattern; consumers (e.g. MessageAdapter.areContentsTheSame)
+    // must compare render-driving fields explicitly rather than relying on `==`.
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is MessageEntity) return false
+        return uuid == other.uuid
+    }
+
+    override fun hashCode(): Int = uuid.hashCode()
+
     companion object {
         const val DIRECTION_INBOUND = 0
         const val DIRECTION_OUTBOUND = 1

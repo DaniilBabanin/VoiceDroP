@@ -10,7 +10,7 @@
         android:layout_height="wrap_content"
         android:padding="16dp"
         android:text="@string/widget_pick_contact_title"
-        android:textAppearance="?attr/textAppearanceHeadline6"/>
+        android:textAppearance="?attr/textAppearanceTitleLarge"/>
 
     <ListView
         android:id="@+id/widget_contact_list"

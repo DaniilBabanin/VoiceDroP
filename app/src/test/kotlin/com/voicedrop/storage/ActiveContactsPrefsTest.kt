@@ -4,7 +4,9 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -20,15 +22,15 @@ class ActiveContactsPrefsTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
-        context.getSharedPreferences("voicedrop_settings", Context.MODE_PRIVATE)
-            .edit().clear().commit()
+        prefs().edit().clear().commit()
     }
 
     @After
     fun tearDown() {
-        context.getSharedPreferences("voicedrop_settings", Context.MODE_PRIVATE)
-            .edit().clear().commit()
+        prefs().edit().clear().commit()
     }
+
+    private fun prefs() = context.getSharedPreferences("voicedrop_settings", Context.MODE_PRIVATE)
 
     private fun contact(id: String, addedAt: Long) =
         ContactEntity(
@@ -39,89 +41,115 @@ class ActiveContactsPrefsTest {
         )
 
     @Test
-    fun defaultIdRoundTrip() {
-        assertNull(ActiveContactsPrefs.getDefaultId(context))
-        ActiveContactsPrefs.setDefaultId(context, "abc")
-        assertEquals("abc", ActiveContactsPrefs.getDefaultId(context))
-        ActiveContactsPrefs.setDefaultId(context, null)
-        assertNull(ActiveContactsPrefs.getDefaultId(context))
+    fun activeIdsRoundTrip() {
+        assertEquals(emptySet<String>(), ActiveContactsPrefs.getActiveIds(context))
+        ActiveContactsPrefs.setActiveIds(context, setOf("a", "b"))
+        assertEquals(setOf("a", "b"), ActiveContactsPrefs.getActiveIds(context))
     }
 
     @Test
-    fun resolveRecipientReturnsExplicitDefaultWhenPresent() {
+    fun setActiveAddsAndRemovesAtomically() {
+        ActiveContactsPrefs.setActive(context, "a", true)
+        ActiveContactsPrefs.setActive(context, "b", true)
+        assertEquals(setOf("a", "b"), ActiveContactsPrefs.getActiveIds(context))
+        ActiveContactsPrefs.setActive(context, "a", false)
+        assertEquals(setOf("b"), ActiveContactsPrefs.getActiveIds(context))
+        ActiveContactsPrefs.setActive(context, "b", false)
+        assertEquals(emptySet<String>(), ActiveContactsPrefs.getActiveIds(context))
+    }
+
+    @Test
+    fun resolveRecipientsReturnsCheckedSubset() {
         val a = contact("a", 100L)
-        val b = contact("b", 200L) // newer
-        ActiveContactsPrefs.setDefaultId(context, "a")
+        val b = contact("b", 200L)
+        val c = contact("c", 300L)
+        ActiveContactsPrefs.setActiveIds(context, setOf("a", "c"))
 
-        val resolved = ActiveContactsPrefs.resolveRecipient(context, listOf(a, b))
+        val resolved = ActiveContactsPrefs.resolveRecipients(context, listOf(a, b, c))
 
-        assertEquals("a", resolved?.id)
+        assertEquals(setOf("a", "c"), resolved.map { it.id }.toSet())
     }
 
     @Test
-    fun resolveRecipientFallsBackToNewestWhenDefaultUnset() {
+    fun resolveRecipientsFallsBackToNewestWhenSetEmpty() {
         val a = contact("a", 100L)
         val b = contact("b", 200L)
 
-        val resolved = ActiveContactsPrefs.resolveRecipient(context, listOf(a, b))
+        val resolved = ActiveContactsPrefs.resolveRecipients(context, listOf(a, b))
 
-        assertEquals("b", resolved?.id)
+        assertEquals(listOf("b"), resolved.map { it.id })
     }
 
     @Test
-    fun resolveRecipientFallsBackAndClearsStaleDefault() {
+    fun resolveRecipientsPrunesStaleIds() {
         val a = contact("a", 100L)
-        ActiveContactsPrefs.setDefaultId(context, "ghost") // no longer present
+        ActiveContactsPrefs.setActiveIds(context, setOf("a", "ghost"))
 
-        val resolved = ActiveContactsPrefs.resolveRecipient(context, listOf(a))
+        val resolved = ActiveContactsPrefs.resolveRecipients(context, listOf(a))
 
-        assertEquals("a", resolved?.id)
-        assertNull(ActiveContactsPrefs.getDefaultId(context))
+        assertEquals(listOf("a"), resolved.map { it.id })
+        // The ghost id is auto-pruned from the persisted set.
+        assertEquals(setOf("a"), ActiveContactsPrefs.getActiveIds(context))
     }
 
     @Test
-    fun resolveRecipientNullForEmptyContactList() {
-        assertNull(ActiveContactsPrefs.resolveRecipient(context, emptyList()))
+    fun resolveRecipientsEmptyForEmptyContactList() {
+        assertTrue(ActiveContactsPrefs.resolveRecipients(context, emptyList()).isEmpty())
     }
 
     @Test
-    fun migrateLegacyActiveSetLiftsFirstIdIntoDefault() {
-        val prefs = context.getSharedPreferences("voicedrop_settings", Context.MODE_PRIVATE)
-        prefs.edit().putStringSet("pref_active_contact_ids", setOf("legacy-a")).commit()
+    fun migratesLegacyDefaultIntoSet() {
+        prefs().edit().putString("pref_default_contact_id", "legacy-a").commit()
 
-        ActiveContactsPrefs.migrateLegacyActiveSet(context)
+        val ids = ActiveContactsPrefs.getActiveIds(context)
 
-        assertEquals("legacy-a", ActiveContactsPrefs.getDefaultId(context))
-        // Legacy set is cleared so it can't drift out of sync.
-        assertEquals(emptySet<String>(), prefs.getStringSet("pref_active_contact_ids", emptySet()))
+        assertEquals(setOf("legacy-a"), ids)
+        // Old key removed; migration marker set.
+        assertNull(prefs().getString("pref_default_contact_id", null))
+        assertTrue(prefs().getBoolean("pref_default_migrated_to_set", false))
     }
 
     @Test
-    fun migrateLegacyActiveSetDoesNotClobberExistingDefault() {
-        val prefs = context.getSharedPreferences("voicedrop_settings", Context.MODE_PRIVATE)
-        prefs.edit()
-            .putString("pref_default_contact_id", "explicit")
-            .putStringSet("pref_active_contact_ids", setOf("legacy-a"))
+    fun migrationIsIdempotent() {
+        prefs().edit().putString("pref_default_contact_id", "legacy-a").commit()
+        ActiveContactsPrefs.getActiveIds(context) // first call migrates
+
+        // Simulate user later editing the set explicitly:
+        ActiveContactsPrefs.setActiveIds(context, setOf("x", "y"))
+
+        // A second call must not re-introduce "legacy-a".
+        assertEquals(setOf("x", "y"), ActiveContactsPrefs.getActiveIds(context))
+    }
+
+    @Test
+    fun migrationDoesNothingWhenNoLegacyDefault() {
+        // Fresh install: no legacy key, no set yet.
+        val ids = ActiveContactsPrefs.getActiveIds(context)
+
+        assertEquals(emptySet<String>(), ids)
+        assertTrue(prefs().getBoolean("pref_default_migrated_to_set", false))
+    }
+
+    @Test
+    fun migrationDoesNotClobberExistingSet() {
+        // User somehow ended up with both keys (would only happen if downgraded then re-upgraded).
+        prefs().edit()
+            .putString("pref_default_contact_id", "legacy-a")
+            .putStringSet("pref_active_contact_ids", setOf("explicit-b"))
             .commit()
 
-        ActiveContactsPrefs.migrateLegacyActiveSet(context)
+        val ids = ActiveContactsPrefs.getActiveIds(context)
 
-        assertEquals("explicit", ActiveContactsPrefs.getDefaultId(context))
+        assertEquals(setOf("explicit-b"), ids)
+        assertNull(prefs().getString("pref_default_contact_id", null))
+        assertTrue(prefs().getBoolean("pref_default_migrated_to_set", false))
     }
 
     @Test
-    fun migrateLegacyActiveSetIsIdempotent() {
-        val prefs = context.getSharedPreferences("voicedrop_settings", Context.MODE_PRIVATE)
-        prefs.edit().putStringSet("pref_active_contact_ids", setOf("legacy-a")).commit()
-
-        ActiveContactsPrefs.migrateLegacyActiveSet(context)
-        // Simulate a later run after the user set a different default explicitly.
-        ActiveContactsPrefs.setDefaultId(context, "explicit-later")
-        // Re-seed the legacy set as if some other code wrote it (shouldn't happen, but covers re-runs).
-        prefs.edit().putStringSet("pref_active_contact_ids", setOf("legacy-b")).commit()
-
-        ActiveContactsPrefs.migrateLegacyActiveSet(context)
-
-        assertEquals("explicit-later", ActiveContactsPrefs.getDefaultId(context))
+    fun migrationRemovesLegacyKeyEvenWhenItsValueIsNull() {
+        // Verify the "remove old key" step runs even on a fresh install.
+        val ids = ActiveContactsPrefs.getActiveIds(context)
+        assertFalse(prefs().contains("pref_default_contact_id"))
+        assertEquals(emptySet<String>(), ids)
     }
 }

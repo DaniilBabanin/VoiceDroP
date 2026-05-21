@@ -18,7 +18,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.util.UUID
 
 class NotificationActionReceiver : BroadcastReceiver() {
@@ -43,11 +42,11 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 scope.launch {
                     val message = repository.getMessage(uuid) ?: return@launch
 
-                    // Local DELETE — wipe the audio file + soft-delete the row.
+                    // Local DELETE — refcount-aware: the audio file is wiped only when
+                    // no other recipient's row still references it (fan-out safe).
                     // Sender-side handling is unchanged from v1 per dr17.5 — only the
                     // outbound wire encoding changes.
-                    message.encryptedFilePath?.let { path -> secureDelete(File(path)) }
-                    repository.markDeleted(uuid)
+                    repository.markDeletedWithBlobRefcount(message)
                     notificationHelper.cancelNotification(uuid.hashCode())
 
                     val targetUuidObj = runCatching { UUID.fromString(uuid) }.getOrNull() ?: return@launch
@@ -115,26 +114,6 @@ class NotificationActionReceiver : BroadcastReceiver() {
             return
         }
         context.startForegroundService(VoiceDropService.flushOutboxIntent(context))
-    }
-
-    private fun secureDelete(file: File) {
-        if (!file.exists()) return
-        try {
-            val length = file.length()
-            if (length > 0) {
-                file.outputStream().use { out ->
-                    val zeros = ByteArray(minOf(length, 65536).toInt())
-                    var remaining = length
-                    while (remaining > 0) {
-                        val toWrite = minOf(remaining, zeros.size.toLong()).toInt()
-                        out.write(zeros, 0, toWrite)
-                        remaining -= toWrite
-                    }
-                }
-            }
-        } finally {
-            file.delete()
-        }
     }
 
     companion object {

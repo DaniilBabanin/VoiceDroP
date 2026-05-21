@@ -47,22 +47,31 @@ class AudioRecorder {
         audioRecord!!.startRecording()
     }
 
-    // Signal the recordLoop to stop; the Deferred returned by recordLoop() carries the bytes.
+    // Signal the recordLoop to stop; the Deferred returned by recordLoop() carries the result.
     fun stopRecording() {
         recording = false
     }
 
-    suspend fun recordLoop(onFrame: (ByteArray) -> Unit): ByteArray = withContext(Dispatchers.IO) {
-        val ar = audioRecord ?: return@withContext ByteArray(0)
+    /**
+     * Result of one recording session: the length-prefixed opus stream for the
+     * wire/disk, plus a fixed-size downsampled peak array for the cached
+     * waveform bar (§D / Phase B).
+     */
+    data class RecordResult(val opus: ByteArray, val peaks: ByteArray)
+
+    suspend fun recordLoop(onFrame: (ByteArray) -> Unit): RecordResult = withContext(Dispatchers.IO) {
+        val ar = audioRecord ?: return@withContext RecordResult(ByteArray(0), ByteArray(0))
         val encoder = OpusEncoder()
         encoder.init(sampleRate, 1, 24000)
 
         val output = ByteArrayOutputStream()
         val buffer = ShortArray(frameSize)
+        val peakAccumulator = PeakAccumulator()
 
         while (recording && isActive) {
             val read = ar.read(buffer, 0, frameSize)
             if (read > 0) {
+                peakAccumulator.feed(buffer, read)
                 val pcmBytes = shortsToBytes(buffer, read)
                 val encoded = encoder.encode(pcmBytes)
                 output.write(encoded.size.toLittleEndianBytes())
@@ -74,7 +83,7 @@ class AudioRecorder {
         ar.stop()
         ar.release()
         encoder.release()
-        output.toByteArray()
+        RecordResult(opus = output.toByteArray(), peaks = peakAccumulator.build())
     }
 
     private fun shortsToBytes(shorts: ShortArray, count: Int): ByteArray {

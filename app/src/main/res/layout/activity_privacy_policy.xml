@@ -7,13 +7,15 @@
     android:orientation="vertical"
     android:fitsSystemWindows="true">
 
-    <androidx.appcompat.widget.Toolbar
+    <com.google.android.material.appbar.MaterialToolbar
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        app:title="@string/privacy_policy"/>
+        app:title="@string/privacy_policy"
+        app:titleTextAppearance="@style/TextAppearance.VoiceDrop.Wordmark"/>
 
     <ScrollView
+        android:id="@+id/scroll_privacy"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1">
@@ -24,7 +26,7 @@
             android:layout_height="wrap_content"
             android:padding="16dp"
             android:textIsSelectable="true"
-            android:textAppearance="?attr/textAppearanceBody2"/>
+            android:textAppearance="?attr/textAppearanceBodyMedium"/>
     </ScrollView>
 
     <View

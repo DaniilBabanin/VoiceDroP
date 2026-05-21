@@ -557,6 +557,10 @@ class ConnectionManager(
         // Writing inside the txn extends the txn by FS-IO time; tolerable for the
         // VOICE rate and worth it for the atomicity with state advance.
         opusFile.writeBytes(voice.opusBytes)
+        // ~150–600 ms opus decode inside the receive txn — this dominates txn
+        // duration. See computePeaksFromOpus docstring for the tradeoff vs.
+        // hoisting + Phase-F-style lazy backfill.
+        val peaks = computePeaksFromOpus(voice.opusBytes)
         val now = System.currentTimeMillis()
         return MessageEntity(
             uuid = uuidStr,
@@ -569,6 +573,7 @@ class ConnectionManager(
             deleteAfterMs = voice.deleteAfterMs,
             scheduledDeleteAt = if (voice.deleteAfterMs > 0) now + voice.deleteAfterMs else 0L,
             transcription = null,
+            waveformPeaks = peaks,
             createdAt = wireTimestampMs,
             sentAt = 0L,
             deliveredAt = now
@@ -820,5 +825,38 @@ class ConnectionManager(
             }
             return uuidBytesToUuidString(bytes)
         }
+    }
+}
+
+/**
+ * Decode the framed opus blob and run it through [com.voicedrop.audio.PeakAccumulator]
+ * to produce the 80-byte waveform peaks for an inbound message. Same accumulator
+ * the record path uses, so receive-side peaks match record-side peaks for
+ * identical audio. Runs inside the receive txn — see caller comment.
+ *
+ * Frame format: repeated `[4-byte little-endian length N][N bytes opus packet]`
+ * as written by `AudioRecorder.recordLoop`. Malformed length prefixes truncate
+ * the waveform rather than crash. Per-packet decode failures propagate out and
+ * roll the txn back (existing receive-side semantics).
+ */
+private fun computePeaksFromOpus(opus: ByteArray): ByteArray {
+    // Defaults to 16kHz mono — matches AudioRecorder.recordLoop's encoder config.
+    val decoder = com.voicedrop.audio.OpusDecoder()
+    try {
+        val acc = com.voicedrop.audio.PeakAccumulator()
+        val input = java.io.ByteArrayInputStream(opus)
+        val lenBuf = ByteArray(4)
+        while (input.available() > 0) {
+            if (input.read(lenBuf) != 4) break
+            val n = java.nio.ByteBuffer.wrap(lenBuf).order(java.nio.ByteOrder.LITTLE_ENDIAN).int
+            if (n <= 0 || n > 65536) break
+            val packet = ByteArray(n)
+            if (input.read(packet) != n) break
+            val pcm = decoder.decode(packet)
+            acc.feed(pcm, pcm.size)
+        }
+        return acc.build()
+    } finally {
+        decoder.release()
     }
 }

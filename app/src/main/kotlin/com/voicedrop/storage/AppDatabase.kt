@@ -8,14 +8,14 @@ import androidx.room.TypeConverter
 import androidx.room.TypeConverters
 
 /**
- * Schema v5 — v4 → v5 — §3.2: per-pair rotating prekey on top of identity.
- * Wipes ratchet state on every existing contact (forces re-pair); identity /
- * verification / messages preserved.
+ * Schema v6 — v5 → v6 — §D: adds cached `waveformPeaks` blob to messages for the
+ * playback waveform bar (lazily backfilled on first playback; see Migration_5_6).
  *
  * v1.x → v3 was a hard cutover (destructive). v3 → v4 is the FIRST real migration
  * — adds `verified_at` and `verified_fp_pair_hash` columns to `contacts`. v4 → v5
  * adds the `prekey_epochs` table and wipes ratchet state on all existing contacts
- * (see Migration_4_5). The fallback policy is `fallbackToDestructiveMigrationOnDowngrade`
+ * (see Migration_4_5). v5 → v6 adds the `waveformPeaks` BLOB column on `messages`
+ * (see Migration_5_6). The fallback policy is `fallbackToDestructiveMigrationOnDowngrade`
  * so upgrades require a real `Migration` while downgrades (sideloading an older APK)
  * still wipe cleanly. The "Pair again" UX is wired up via [RepairNamesStash], which
  * copies contact display names out of the old DB file *before* Room takes ownership.
@@ -29,7 +29,7 @@ import androidx.room.TypeConverters
         PendingOutboundFrameEntity::class,
         PrekeyEpochEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 @TypeConverters(AppDatabase.Converters::class)
@@ -70,7 +70,7 @@ abstract class AppDatabase : RoomDatabase() {
                         AppDatabase::class.java,
                         "voicedrop.db"
                     )
-                        .addMigrations(Migration_3_4, Migration_4_5)
+                        .addMigrations(Migration_3_4, Migration_4_5, Migration_5_6)
                         .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                         .build()
                         .also {

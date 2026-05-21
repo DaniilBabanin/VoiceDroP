@@ -109,6 +109,18 @@
                 android:resource="@xml/widget_voicedrop_info"/>
         </receiver>
 
+        <receiver
+            android:name=".ui.AllWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_all_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_voicedrop_all_info"/>
+        </receiver>
+
         <activity
             android:name=".ui.VoiceDropWidgetConfigActivity"
             android:exported="true"

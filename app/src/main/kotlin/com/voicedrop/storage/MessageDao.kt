@@ -65,4 +65,18 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE contactId = :contactId")
     suspend fun getByContactList(contactId: String): List<MessageEntity>
+
+    @Query("SELECT COUNT(*) FROM messages WHERE encryptedFilePath = :path")
+    suspend fun countByEncryptedFilePath(path: String): Int
+
+    @Query("DELETE FROM messages WHERE uuid = :uuid")
+    suspend fun deleteByUuid(uuid: String): Int
+
+    /**
+     * §D — lazy backfill of cached waveform peaks on first playback. The
+     * `waveformPeaks IS NULL` guard makes the update idempotent against
+     * concurrent playbacks (only the first writer wins; the rest no-op).
+     */
+    @Query("UPDATE messages SET waveformPeaks = :peaks WHERE uuid = :uuid AND waveformPeaks IS NULL")
+    suspend fun updateWaveformPeaks(uuid: String, peaks: ByteArray): Int
 }

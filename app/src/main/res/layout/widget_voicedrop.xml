@@ -5,8 +5,10 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:gravity="center"
-    android:background="@drawable/widget_voicedrop_bg"
-    android:padding="6dp">
+    android:background="@drawable/widget_droplet_bg"
+    android:paddingTop="14dp"
+    android:paddingBottom="6dp"
+    android:paddingHorizontal="6dp">
 
     <ImageView
         android:id="@+id/widget_icon"
