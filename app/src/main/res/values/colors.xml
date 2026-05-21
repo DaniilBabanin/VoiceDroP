@@ -33,4 +33,24 @@
     <color name="teal_500">#FF006A6A</color>
     <color name="accent_cyan">#FF00D9FF</color>
     <color name="white">#FFFFFFFF</color>
+
+    <!-- §A — 8-hue avatar palette. Hues chosen to read as distinct on both light
+         and dark surfaces; each pairs with an on-hue color sized for ≥4.5:1
+         contrast against the letter glyph drawn on top. -->
+    <color name="avatar_hue_0">#FF26A69A</color>
+    <color name="avatar_hue_1">#FF0097A7</color>
+    <color name="avatar_hue_2">#FF546E7A</color>
+    <color name="avatar_hue_3">#FF8E24AA</color>
+    <color name="avatar_hue_4">#FF7CB342</color>
+    <color name="avatar_hue_5">#FFEC407A</color>
+    <color name="avatar_hue_6">#FFFFB300</color>
+    <color name="avatar_hue_7">#FF3949AB</color>
+    <color name="avatar_on_hue_0">#FFFFFFFF</color>
+    <color name="avatar_on_hue_1">#FFFFFFFF</color>
+    <color name="avatar_on_hue_2">#FFFFFFFF</color>
+    <color name="avatar_on_hue_3">#FFFFFFFF</color>
+    <color name="avatar_on_hue_4">#FF1A1A1A</color>
+    <color name="avatar_on_hue_5">#FFFFFFFF</color>
+    <color name="avatar_on_hue_6">#FF1A1A1A</color>
+    <color name="avatar_on_hue_7">#FFFFFFFF</color>
 </resources>
