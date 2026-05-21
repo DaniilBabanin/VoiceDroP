@@ -65,7 +65,7 @@ class RecordingBannerTest {
     }
 
     @After
-    fun tearDown() = runBlocking {
+    fun tearDown() = runBlocking(Dispatchers.IO) {
         scope.cancel()
         AppDatabase.getInstance(ctx).clearAllTables()
         ServiceState.updateState(ServiceState.State.IDLE, emptyList())
