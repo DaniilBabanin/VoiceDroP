@@ -137,4 +137,12 @@
     <string name="action_record">Record</string>
     <string name="action_stop">Stop</string>
     <string name="recording_other_contact">Recording for %1$s — stop that first.</string>
+
+    <!-- Spec 18-record-playback-ux.md §5 — recording banner copy. -->
+    <string name="recording_for_one">Recording for %1$s</string>
+    <string name="recording_for_many">Recording for %1$d recipients</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_send_now">Send</string>
+    <string name="slide_to_cancel">← slide to cancel</string>
+    <string name="action_resume">Resume</string>
 </resources>
