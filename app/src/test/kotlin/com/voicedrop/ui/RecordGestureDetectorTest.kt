@@ -36,10 +36,9 @@ class RecordGestureDetectorTest {
         recording = false
         fakeClockMs = 0L
         val activity = Robolectric.buildActivity(Activity::class.java).create().get()
-        // Fixed-width View. width = 200 makes cancel threshold = -120, un-latch = -60.
-        view = object : View(activity) {
-            override fun getWidth(): Int = 200
-        }
+        // width = 200 makes cancel threshold = -120, un-latch = -60. getWidth() is final
+        // on View, so we lay the view out at (0,0)-(200,50) to give it real dimensions.
+        view = View(activity).apply { layout(0, 0, 200, 50) }
         detector = RecordGestureDetector(
             view = view,
             onStart = { events += "start"; recording = true },
