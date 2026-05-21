@@ -29,11 +29,14 @@ class MessageAdapter(
 ) : ListAdapter<MessageEntity, MessageAdapter.ViewHolder>(DIFF_CALLBACK) {
 
     private var playingUuid: String? = null
+    private var playingProgress: Float = 0f
+    private var recyclerView: RecyclerView? = null
 
     fun setPlayingUuid(uuid: String?) {
         if (playingUuid == uuid) return
         val previous = playingUuid
         playingUuid = uuid
+        if (uuid == null) playingProgress = 0f
         val list = currentList
         if (previous != null) {
             val idx = list.indexOfFirst { it.uuid == previous }
@@ -45,6 +48,30 @@ class MessageAdapter(
         }
     }
 
+    /**
+     * Stream playback progress (0f..1f) to the currently bound ViewHolder for
+     * [playingUuid] without going through [notifyItemChanged] — direct view update
+     * keeps the ~50Hz emission off the diff/rebind path.
+     */
+    fun setPlayingProgress(progress: Float) {
+        playingProgress = progress.coerceIn(0f, 1f)
+        val uuid = playingUuid ?: return
+        val idx = currentList.indexOfFirst { it.uuid == uuid }
+        if (idx < 0) return
+        val holder = recyclerView?.findViewHolderForAdapterPosition(idx) as? ViewHolder ?: return
+        holder.setProgress(playingProgress)
+    }
+
+    override fun onAttachedToRecyclerView(rv: RecyclerView) {
+        super.onAttachedToRecyclerView(rv)
+        recyclerView = rv
+    }
+
+    override fun onDetachedFromRecyclerView(rv: RecyclerView) {
+        super.onDetachedFromRecyclerView(rv)
+        recyclerView = null
+    }
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
         val view = LayoutInflater.from(parent.context)
             .inflate(R.layout.item_message, parent, false)
@@ -52,7 +79,9 @@ class MessageAdapter(
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-        holder.bind(getItem(position), playingUuid == getItem(position).uuid, onShareRequest)
+        val item = getItem(position)
+        val isPlaying = playingUuid == item.uuid
+        holder.bind(item, isPlaying, if (isPlaying) playingProgress else 0f, onShareRequest)
     }
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
@@ -60,8 +89,18 @@ class MessageAdapter(
         private val durationText: TextView = view.findViewById(R.id.durationText)
         private val infoText: TextView = view.findViewById(R.id.infoText)
         private val playButton: ImageButton = view.findViewById(R.id.playButton)
+        private val waveformView: WaveformView = view.findViewById(R.id.waveform_view)
 
-        fun bind(message: MessageEntity, isPlaying: Boolean, onShareRequest: (MessageEntity) -> Unit) {
+        fun setProgress(progress: Float) {
+            waveformView.setProgress(progress)
+        }
+
+        fun bind(
+            message: MessageEntity,
+            isPlaying: Boolean,
+            progress: Float,
+            onShareRequest: (MessageEntity) -> Unit,
+        ) {
             val ctx = itemView.context
             val isOutbound = message.direction == MessageEntity.DIRECTION_OUTBOUND
 
@@ -90,6 +129,9 @@ class MessageAdapter(
 
             durationText.text = formatDuration(message.durationMs)
             infoText.text = buildInfoSpannable(message)
+
+            waveformView.setPeaks(message.waveformPeaks)
+            waveformView.setProgress(progress)
 
             val canPlay = message.encryptedFilePath != null &&
                 message.state != MessageEntity.STATE_DELETED &&

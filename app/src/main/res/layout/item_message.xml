@@ -23,23 +23,29 @@
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical">
-
-            <ImageButton
-                android:id="@+id/playButton"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:src="@drawable/ic_play"
-                android:contentDescription="@string/action_play"
-                android:scaleType="center"/>
+            android:orientation="vertical">
 
             <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:layout_marginStart="6dp">
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <ImageButton
+                    android:id="@+id/playButton"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:src="@drawable/ic_play"
+                    android:contentDescription="@string/action_play"
+                    android:scaleType="center"/>
+
+                <com.voicedrop.ui.WaveformView
+                    android:id="@+id/waveform_view"
+                    android:layout_width="160dp"
+                    android:layout_height="28dp"
+                    android:layout_marginStart="6dp"
+                    android:layout_marginEnd="8dp"/>
 
                 <TextView
                     android:id="@+id/durationText"
@@ -48,16 +54,18 @@
                     android:textAppearance="?attr/textAppearanceBodyLarge"
                     android:textFontWeight="600"/>
 
-                <TextView
-                    android:id="@+id/infoText"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:maxLines="1"
-                    android:ellipsize="end"
-                    android:alpha="0.6"
-                    android:textAppearance="?attr/textAppearanceLabelSmall"/>
-
             </LinearLayout>
+
+            <TextView
+                android:id="@+id/infoText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="46dp"
+                android:layout_marginTop="2dp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:alpha="0.6"
+                android:textAppearance="?attr/textAppearanceLabelSmall"/>
 
         </LinearLayout>
 

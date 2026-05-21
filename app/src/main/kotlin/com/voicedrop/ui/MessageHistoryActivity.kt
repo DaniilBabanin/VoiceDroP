@@ -106,6 +106,12 @@ class MessageHistoryActivity : AppCompatActivity() {
                 adapter.setPlayingUuid(uuid)
             }
         }
+
+        scope.launch {
+            ServiceState.playingProgress.collectLatest { progress ->
+                adapter.setPlayingProgress(progress)
+            }
+        }
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
