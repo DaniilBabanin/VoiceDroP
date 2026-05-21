@@ -557,6 +557,9 @@ class ConnectionManager(
         // Writing inside the txn extends the txn by FS-IO time; tolerable for the
         // VOICE rate and worth it for the atomicity with state advance.
         opusFile.writeBytes(voice.opusBytes)
+        // ~150–600 ms opus decode inside the receive txn — this dominates txn
+        // duration. See computePeaksFromOpus docstring for the tradeoff vs.
+        // hoisting + Phase-F-style lazy backfill.
         val peaks = computePeaksFromOpus(voice.opusBytes)
         val now = System.currentTimeMillis()
         return MessageEntity(
@@ -837,7 +840,8 @@ class ConnectionManager(
  * roll the txn back (existing receive-side semantics).
  */
 private fun computePeaksFromOpus(opus: ByteArray): ByteArray {
-    val decoder = com.voicedrop.audio.OpusDecoder().apply { init(16000, 1) }
+    // Defaults to 16kHz mono — matches AudioRecorder.recordLoop's encoder config.
+    val decoder = com.voicedrop.audio.OpusDecoder()
     try {
         val acc = com.voicedrop.audio.PeakAccumulator()
         val input = java.io.ByteArrayInputStream(opus)
