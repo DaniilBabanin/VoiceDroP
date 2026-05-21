@@ -322,19 +322,25 @@ class ContactListActivity : AppCompatActivity() {
             override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) {
                 val position = viewHolder.adapterPosition
                 if (position == RecyclerView.NO_POSITION) return
-                val contact = adapter.currentList[position]
-                showDeleteConfirmation(contact, position)
+                val row = adapter.currentList[position]
+                showDeleteConfirmation(row.id, row.name, position)
             }
         }
         ItemTouchHelper(swipeCallback).attachToRecyclerView(recyclerView)
     }
 
-    private fun showDeleteConfirmation(contact: ContactEntity, position: Int) {
+    private fun showDeleteConfirmation(contactId: String, contactName: String, position: Int) {
         AlertDialog.Builder(this)
             .setTitle(R.string.delete_contact_title)
-            .setMessage(getString(R.string.delete_contact_message, contact.name))
+            .setMessage(getString(R.string.delete_contact_message, contactName))
             .setPositiveButton(R.string.delete) { _, _ ->
-                scope.launch { deleteContact(contact) }
+                scope.launch {
+                    // Re-fetch by id because the swipe callback only has the UiState.
+                    // If the row vanished between swipe and confirm (rare: re-pair, etc.)
+                    // there's nothing left to delete.
+                    val entity = repository.getContact(contactId) ?: return@launch
+                    deleteContact(entity)
+                }
             }
             .setNegativeButton(android.R.string.cancel) { _, _ ->
                 adapter.notifyItemChanged(position)
