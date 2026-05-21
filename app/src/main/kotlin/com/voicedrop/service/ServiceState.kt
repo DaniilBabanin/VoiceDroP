@@ -24,6 +24,9 @@ object ServiceState {
     private val _playingUuid = MutableStateFlow<String?>(null)
     val playingUuid: StateFlow<String?> = _playingUuid
 
+    private val _playingProgress = MutableStateFlow(0f)
+    val playingProgress: StateFlow<Float> = _playingProgress
+
     fun updateState(
         state: State,
         contactIds: List<String>,
@@ -40,5 +43,13 @@ object ServiceState {
 
     fun setPlayingUuid(uuid: String?) {
         _playingUuid.value = uuid
+    }
+
+    fun setPlayingProgress(p: Float) {
+        _playingProgress.value = p
+    }
+
+    fun resetPlayingProgress() {
+        _playingProgress.value = 0f
     }
 }

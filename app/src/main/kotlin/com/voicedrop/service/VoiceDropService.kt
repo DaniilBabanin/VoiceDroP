@@ -367,6 +367,7 @@ class VoiceDropService : Service() {
     fun play(uuid: String) {
         playbackJob?.cancel()
         ServiceState.setPlayingUuid(uuid)
+        ServiceState.resetPlayingProgress()
         playbackJob = scope.launch {
             val notifId = uuid.hashCode()
             try {
@@ -379,6 +380,7 @@ class VoiceDropService : Service() {
                 notificationHelper.updatePlaybackProgress(notifId, 0, message.durationMs)
 
                 audioPlayer.play(opusBytes) { progress ->
+                    ServiceState.setPlayingProgress(progress)
                     val elapsed = (progress * message.durationMs).toInt()
                     scope.launch {
                         notificationHelper.updatePlaybackProgress(notifId, elapsed, message.durationMs)
@@ -392,6 +394,7 @@ class VoiceDropService : Service() {
                 notificationHelper.cancelNotification(notifId)
                 if (ServiceState.playingUuid.value == uuid) {
                     ServiceState.setPlayingUuid(null)
+                    ServiceState.resetPlayingProgress()
                 }
             }
         }
@@ -401,6 +404,7 @@ class VoiceDropService : Service() {
         playbackJob?.cancel()
         playbackJob = null
         ServiceState.setPlayingUuid(null)
+        ServiceState.resetPlayingProgress()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
