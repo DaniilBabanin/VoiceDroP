@@ -239,6 +239,7 @@ class VoiceDropService : Service() {
                 startRecording(ids)
             }
             ACTION_RECORD_STOP -> stopRecording()
+            ACTION_RECORD_CANCEL -> cancelRecording()
             ACTION_PLAY -> {
                 val uuid = intent.getStringExtra(EXTRA_UUID) ?: return START_STICKY
                 play(uuid)
@@ -371,6 +372,38 @@ class VoiceDropService : Service() {
         }
     }
 
+    /**
+     * Spec 18-record-playback-ux.md §4. Mirrors [stopRecording] up to the point
+     * where a finalised recording would be enqueued for send, then drops the
+     * opus + peak buffer on the floor: no DB row insert, no `MultiRecipientSender.sendVoice`,
+     * no outbox frame. Recording notification is dismissed; idle notification restored;
+     * `ServiceState` returns to `IDLE`; widgets refresh. Safe to call when no recording is
+     * in flight — it just no-ops via the `recordingContactIds.isEmpty()` early return.
+     */
+    private fun cancelRecording() {
+        scope.launch {
+            val contactIds = recordingContactIds.takeIf { it.isNotEmpty() } ?: return@launch
+            recordingContactIds = emptyList()
+
+            try {
+                audioRecorder.stopRecording()
+                // Await the loop so it tears down AudioRecord cleanly. Result is discarded.
+                runCatching { recordingJob?.await() }
+                recordingJob = null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "cancelRecording: recorder teardown failed (ignored)", e)
+            } finally {
+                ServiceState.updateState(ServiceState.State.IDLE, emptyList())
+                VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
+                AllWidgetProvider.refreshAll(this@VoiceDropService)
+                startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
+                Log.i(TAG, "recording cancelled for ${contactIds.size} recipient(s); buffer discarded")
+            }
+        }
+    }
+
     fun play(uuid: String) {
         playbackJob?.cancel()
         ServiceState.setPlayingUuid(uuid)
@@ -492,6 +525,7 @@ class VoiceDropService : Service() {
     companion object {
         const val ACTION_RECORD_START = "com.voicedrop.ACTION_RECORD_START"
         const val ACTION_RECORD_STOP = "com.voicedrop.ACTION_RECORD_STOP"
+        const val ACTION_RECORD_CANCEL = "com.voicedrop.ACTION_RECORD_CANCEL"
         const val ACTION_PLAY = "com.voicedrop.ACTION_PLAY"
         const val ACTION_STOP_PLAY = "com.voicedrop.ACTION_STOP_PLAY"
         const val ACTION_RELOAD_CONFIG = "com.voicedrop.ACTION_RELOAD_CONFIG"
@@ -519,6 +553,11 @@ class VoiceDropService : Service() {
         fun recordStopIntent(context: Context) =
             Intent(context, VoiceDropService::class.java).apply {
                 action = ACTION_RECORD_STOP
+            }
+
+        fun recordCancelIntent(context: Context) =
+            Intent(context, VoiceDropService::class.java).apply {
+                action = ACTION_RECORD_CANCEL
             }
 
         fun playIntent(context: Context, uuid: String) =
