@@ -70,70 +70,77 @@ class AudioPlayer {
         }
 
         private suspend fun runLoop() {
-            val minBufSize = AudioTrack.getMinBufferSize(
-                sampleRate,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-            )
-            audioTrack = AudioTrack(
-                AudioManager.STREAM_MUSIC,
-                sampleRate,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                maxOf(minBufSize, 4096),
-                AudioTrack.MODE_STREAM
-            )
-            decoder = OpusDecoder().also { it.init(sampleRate, 1) }
-            audioTrack!!.play()
-
-            val accumulator = if (onPeaksReady != null) PeakAccumulator() else null
-            var reachedNaturalEnd = false
-
             try {
-                val lenBuf = ByteArray(4)
-                outer@ while (handleScope.isActive) {
-                    while (paused.get() && handleScope.isActive) delay(20)
-                    if (!handleScope.isActive) break
-                    val ofs = cursor.get()
-                    if (ofs + 4 > opusStream.size) {
-                        reachedNaturalEnd = true
-                        break@outer
-                    }
-                    mutex.withLock {
-                        System.arraycopy(opusStream, ofs, lenBuf, 0, 4)
-                    }
-                    val packetSize = ByteBuffer.wrap(lenBuf).order(ByteOrder.LITTLE_ENDIAN).int
-                    if (packetSize <= 0 || packetSize > 65536) break
-                    if (ofs + 4 + packetSize > opusStream.size) break
+                val minBufSize = AudioTrack.getMinBufferSize(
+                    sampleRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                )
+                audioTrack = AudioTrack(
+                    AudioManager.STREAM_MUSIC,
+                    sampleRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    maxOf(minBufSize, 4096),
+                    AudioTrack.MODE_STREAM
+                )
+                decoder = OpusDecoder().also { it.init(sampleRate, 1) }
+                audioTrack!!.play()
 
-                    val packetBuf = ByteArray(packetSize)
-                    mutex.withLock {
-                        System.arraycopy(opusStream, ofs + 4, packetBuf, 0, packetSize)
-                        cursor.set(ofs + 4 + packetSize)
+                val accumulator = if (onPeaksReady != null) PeakAccumulator() else null
+                var reachedNaturalEnd = false
+
+                try {
+                    val lenBuf = ByteArray(4)
+                    outer@ while (handleScope.isActive) {
+                        while (paused.get() && handleScope.isActive) delay(20)
+                        if (!handleScope.isActive) break
+                        val ofs = cursor.get()
+                        if (ofs + 4 > opusStream.size) {
+                            reachedNaturalEnd = true
+                            break@outer
+                        }
+                        mutex.withLock {
+                            System.arraycopy(opusStream, ofs, lenBuf, 0, 4)
+                        }
+                        val packetSize = ByteBuffer.wrap(lenBuf).order(ByteOrder.LITTLE_ENDIAN).int
+                        if (packetSize <= 0 || packetSize > 65536) break
+                        if (ofs + 4 + packetSize > opusStream.size) break
+
+                        val packetBuf = ByteArray(packetSize)
+                        mutex.withLock {
+                            System.arraycopy(opusStream, ofs + 4, packetBuf, 0, packetSize)
+                            cursor.set(ofs + 4 + packetSize)
+                        }
+                        val pcm = try {
+                            decoder!!.decode(packetBuf)
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "decode failed at offset=$ofs size=$packetSize: ${t.message}")
+                            break@outer
+                        }
+                        accumulator?.feed(pcm, pcm.size)
+                        val bytes = shortsToBytes(pcm)
+                        audioTrack!!.write(bytes, 0, bytes.size)
+                        onProgress(cursor.get().toFloat() / opusStream.size.toFloat())
                     }
-                    val pcm = try {
-                        decoder!!.decode(packetBuf)
-                    } catch (t: Throwable) {
-                        Log.w(TAG, "decode failed at offset=$ofs size=$packetSize: ${t.message}")
-                        break@outer
-                    }
-                    accumulator?.feed(pcm, pcm.size)
-                    val bytes = shortsToBytes(pcm)
-                    audioTrack!!.write(bytes, 0, bytes.size)
-                    onProgress(cursor.get().toFloat() / opusStream.size.toFloat())
+                } finally {
+                    audioTrack?.runCatching { stop() }
+                    audioTrack?.runCatching { release() }
+                    audioTrack = null
+                    decoder?.runCatching { release() }
+                    decoder = null
                 }
-            } finally {
-                audioTrack?.runCatching { stop() }
-                audioTrack?.runCatching { release() }
-                audioTrack = null
-                decoder?.runCatching { release() }
-                decoder = null
-            }
 
-            if (reachedNaturalEnd && accumulator != null && onPeaksReady != null) {
-                onPeaksReady.invoke(accumulator.build())
+                if (reachedNaturalEnd && accumulator != null && onPeaksReady != null) {
+                    onPeaksReady.invoke(accumulator.build())
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "playback failed", e)
+            } finally {
+                if (!completion.isCompleted) completion.complete(Unit)
             }
-            if (!completion.isCompleted) completion.complete(Unit)
         }
 
         suspend fun seek(progress: Float): Unit = withContext(Dispatchers.IO) {

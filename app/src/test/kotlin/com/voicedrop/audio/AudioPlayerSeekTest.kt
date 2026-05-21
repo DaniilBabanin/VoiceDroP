@@ -10,6 +10,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
@@ -99,7 +100,14 @@ class AudioPlayerSeekTest {
         val handle = player.play(stream, onProgress = {})
         try {
             handle.pause()
-            delay(100)
+            // Verify pause flag is set — proves pause() actually mutated state even if
+            // the run loop never reached the cursor-advance step (Robolectric + missing
+            // libopus.so means runLoop may die before entering its main loop).
+            val pausedField = handle.javaClass.getDeclaredField("paused").apply { isAccessible = true }
+            val pausedAtomic = pausedField.get(handle) as AtomicBoolean
+            delay(50)
+            assertEquals("pause flag must be set", true, pausedAtomic.get())
+
             val cursor = cursorOf(handle)
             val before = cursor.get()
             delay(100)
