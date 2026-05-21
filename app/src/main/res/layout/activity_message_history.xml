@@ -34,4 +34,15 @@
         android:layout_height="match_parent"
         android:visibility="gone"/>
 
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:id="@+id/fab_record_in_chat"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="16dp"
+        android:src="@drawable/ic_mic"
+        android:contentDescription="@string/action_record"
+        app:backgroundTint="?attr/colorPrimaryContainer"
+        app:tint="?attr/colorOnPrimaryContainer"/>
+
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

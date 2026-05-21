@@ -1,6 +1,8 @@
 package com.voicedrop.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
@@ -8,14 +10,18 @@ import android.view.View
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.floatingactionbutton.FloatingActionButton
+import com.google.android.material.snackbar.Snackbar
 import com.google.crypto.tink.subtle.X25519
 import com.voicedrop.R
 import com.voicedrop.audio.VoiceMessageShare
 import com.voicedrop.crypto.Bootstrap
 import com.voicedrop.crypto.KeyManager
 import com.voicedrop.crypto.ResetReceive
+import com.voicedrop.service.PermissionActivity
 import com.voicedrop.service.ServiceState
 import com.voicedrop.service.VoiceDropService
 import com.voicedrop.storage.AppDatabase
@@ -111,6 +117,96 @@ class MessageHistoryActivity : AppCompatActivity() {
             ServiceState.playingProgress.collectLatest { progress ->
                 adapter.setPlayingProgress(progress)
             }
+        }
+
+        val fab = findViewById<FloatingActionButton>(R.id.fab_record_in_chat)
+        EdgeToEdgeSetup.applyBottomInset(fab)
+        fab.setOnClickListener { onRecordToggle(fab) }
+        scope.launch {
+            ServiceState.recordingState.collectLatest { state ->
+                updateFabState(fab, state)
+            }
+        }
+    }
+
+    /**
+     * §B — FAB tap. Three states:
+     *   - IDLE: start recording for this contact (after a mic-permission check —
+     *     in practice always granted by the time the user reaches this screen,
+     *     but we still gate to match the widget's pattern and survive a revoke).
+     *   - RECORDING this contact: stop.
+     *   - RECORDING a different contact: refuse via Snackbar; the user is in the
+     *     wrong room for that "stop" tap.
+     */
+    private fun onRecordToggle(fab: FloatingActionButton) {
+        val state = ServiceState.recordingState.value
+        when {
+            state.state == ServiceState.State.IDLE -> startRecording()
+            state.state == ServiceState.State.RECORDING &&
+                state.activeContactIds.contains(contactId) -> {
+                startForegroundService(VoiceDropService.recordStopIntent(this))
+            }
+            state.state == ServiceState.State.RECORDING -> {
+                val otherId = state.activeContactIds.firstOrNull()
+                scope.launch {
+                    val otherName = otherId?.let { repository.getContact(it)?.name } ?: ""
+                    Snackbar.make(
+                        fab,
+                        getString(R.string.recording_other_contact, otherName),
+                        Snackbar.LENGTH_LONG
+                    ).show()
+                }
+            }
+            else -> { /* SENDING: ignore — short-lived */ }
+        }
+    }
+
+    private fun startRecording() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            val intent = Intent(this, PermissionActivity::class.java).apply {
+                action = VoiceDropService.ACTION_RECORD_START
+                putExtra(VoiceDropService.EXTRA_CONTACT_ID, contactId)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            }
+            startActivity(intent)
+            return
+        }
+        startForegroundService(VoiceDropService.recordStartIntent(this, contactId))
+    }
+
+    private fun updateFabState(fab: FloatingActionButton, state: ServiceState.RecordingState) {
+        val recordingThisContact = state.state == ServiceState.State.RECORDING &&
+            state.activeContactIds.contains(contactId)
+        if (recordingThisContact) {
+            fab.setImageResource(R.drawable.ic_stop_square)
+            fab.contentDescription = getString(R.string.action_stop)
+            fab.backgroundTintList = android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this, R.color.red_recording)
+            )
+            fab.imageTintList = android.content.res.ColorStateList.valueOf(
+                com.google.android.material.color.MaterialColors.getColor(
+                    fab, com.google.android.material.R.attr.colorOnError, android.graphics.Color.WHITE
+                )
+            )
+        } else {
+            fab.setImageResource(R.drawable.ic_mic)
+            fab.contentDescription = getString(R.string.action_record)
+            fab.backgroundTintList = android.content.res.ColorStateList.valueOf(
+                com.google.android.material.color.MaterialColors.getColor(
+                    fab,
+                    com.google.android.material.R.attr.colorPrimaryContainer,
+                    android.graphics.Color.GRAY
+                )
+            )
+            fab.imageTintList = android.content.res.ColorStateList.valueOf(
+                com.google.android.material.color.MaterialColors.getColor(
+                    fab,
+                    com.google.android.material.R.attr.colorOnPrimaryContainer,
+                    android.graphics.Color.WHITE
+                )
+            )
         }
     }
 
