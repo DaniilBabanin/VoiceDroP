@@ -124,6 +124,8 @@ class NotificationHelper(private val context: Context) {
     }
 
     fun updateRecordingNotification(notifId: Int, text: String) {
+        // In-app RecordingBanner covers this state when foregrounded; no need to also pop a notification.
+        if (ForegroundTracker.isAppInForeground) return
         val notification = NotificationCompat.Builder(context, CHANNEL_RECORDING)
             .setSmallIcon(R.drawable.ic_tile_sending)
             .setContentTitle(text)
@@ -136,6 +138,8 @@ class NotificationHelper(private val context: Context) {
     }
 
     fun updatePlaybackProgress(notifId: Int, progressMs: Int, totalMs: Int) {
+        // In-app PlaybackBanner covers this state when foregrounded.
+        if (ForegroundTracker.isAppInForeground) return
         val stopIntent = PendingIntent.getBroadcast(
             context,
             notifId + 2,
@@ -160,6 +164,9 @@ class NotificationHelper(private val context: Context) {
     }
 
     fun notifyIncoming(contact: ContactEntity, uuid: String, durationMs: Int) {
+        // When the app is in the foreground the contact-list row updates (unread badge)
+        // and the chat bubble appears in-place — no need to also pop a heads-up.
+        if (ForegroundTracker.isAppInForeground) return
         val notification = buildIncomingNotification(contact, uuid, durationMs)
         try {
             notificationManager.notify(uuid.hashCode(), notification)
