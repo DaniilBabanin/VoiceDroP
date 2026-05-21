@@ -23,6 +23,12 @@
             layout="@layout/banner_recording"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"/>
+
+        <include
+            android:id="@+id/banner_playback"
+            layout="@layout/banner_playback"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"/>
     </com.google.android.material.appbar.AppBarLayout>
 
     <androidx.recyclerview.widget.RecyclerView

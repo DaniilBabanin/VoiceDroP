@@ -184,6 +184,9 @@ class MessageHistoryActivity : AppCompatActivity() {
         val recordingBannerRoot = findViewById<View>(R.id.banner_recording)
         RecordingBanner(recordingBannerRoot, repository, scope)
             .bind(ServiceState.recordingState)
+
+        val playbackBannerRoot = findViewById<View>(R.id.banner_playback)
+        PlaybackBanner(playbackBannerRoot, repository, scope).bind()
     }
 
     /**
