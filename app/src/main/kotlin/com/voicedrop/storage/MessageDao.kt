@@ -42,6 +42,39 @@ interface MessageDao {
     )
     fun markGaveUpBlocking(uuid: String): Int
 
+    /**
+     * Played-receipt (spec `16-played-receipt.md` §2) — flips a delivered outbound
+     * row to `STATE_PLAYED` when a `KIND_PLAYED` frame arrives from the recipient.
+     * Guards:
+     *   - `direction = DIRECTION_OUTBOUND` blocks accidental writes to inbound rows.
+     *   - `contactId = :contactId` blocks cross-contact spoof (paired contact A flipping
+     *     a message addressed to paired contact B).
+     *   - `state IN (STATE_SENT, STATE_DELIVERED)` accepts the racy "PLAYED before
+     *     our own RECEIPT" path and rejects `DELETED`/`UNDELIVERABLE` terminal states
+     *     and idempotent `PLAYED → PLAYED` no-ops.
+     * Blocking variant runs inside the [PlayedInboundHandler] transaction.
+     */
+    @Query(
+        "UPDATE messages SET state = ${MessageEntity.STATE_PLAYED} " +
+            "WHERE uuid = :uuid AND contactId = :contactId " +
+            "AND direction = ${MessageEntity.DIRECTION_OUTBOUND} " +
+            "AND state IN (${MessageEntity.STATE_SENT}, ${MessageEntity.STATE_DELIVERED})"
+    )
+    fun markPlayedBlocking(uuid: String, contactId: String): Int
+
+    /**
+     * Backfill `deliveredAt` for the `SENT → PLAYED` race case (PLAYED arrived
+     * before our own wire-RECEIPT for the corresponding VOICE). Only writes if
+     * `deliveredAt = 0` so a legitimate prior RECEIPT timestamp is preserved.
+     * Blocking variant runs inside the same [PlayedInboundHandler] transaction.
+     */
+    @Query(
+        "UPDATE messages SET deliveredAt = :deliveredAt " +
+            "WHERE uuid = :uuid AND direction = ${MessageEntity.DIRECTION_OUTBOUND} " +
+            "AND deliveredAt = 0"
+    )
+    fun backfillDeliveredAtBlocking(uuid: String, deliveredAt: Long): Int
+
     @Query("UPDATE messages SET transcription = :transcription WHERE uuid = :uuid")
     suspend fun updateTranscription(uuid: String, transcription: String)
 
