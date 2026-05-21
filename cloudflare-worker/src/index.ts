@@ -1,4 +1,4 @@
-import { Signal, PeerState } from './types';
+import { Signal } from './types';
 
 export interface Env {
   SIGNALING_ROOM: DurableObjectNamespace;
@@ -40,8 +40,6 @@ export default {
     }
 
     // Relay pull: GET /pull/{roomKey}/{recipientFp}
-    // Client calls this after receiving outbox_ping — returns all pending frames and deletes them.
-    // Using HTTP avoids the ws.send() flush issue in non-hibernation DO async WS handlers.
     const pullMatch = url.pathname.match(/^\/pull\/([a-f0-9]+)\/([a-f0-9]{64})$/);
     if (pullMatch && request.method === 'GET') {
       const [, pullRoomKey, recipientFp] = pullMatch;
@@ -70,12 +68,14 @@ export default {
   },
 };
 
-export class SignalingRoom implements DurableObject {
-  // peers: primary WS per fingerprint (for peer_hello broadcasts and outbox_ping)
-  private peers: Map<string, PeerState> = new Map();
-  // wsToFp: every connected WS → its fingerprint (survives peer overwrites)
-  private wsToFp: Map<WebSocket, string> = new Map();
+// Per-WebSocket attachment. Survives DO hibernation; the runtime persists it
+// next to the WebSocket and re-supplies it on wake via deserializeAttachment().
+// `primary` = first WS that hello'd with this fingerprint owns the presence /
+// outbox_ping role; secondary connections (e.g. path3 send WS) attach but stay
+// out of broadcasts.
+type WsAttach = { fingerprint: string; stunAddr: string; primary: boolean };
 
+export class SignalingRoom implements DurableObject {
   constructor(private state: DurableObjectState, private env: Env) {}
 
   async fetch(request: Request): Promise<Response> {
@@ -98,12 +98,12 @@ export class SignalingRoom implements DurableObject {
       await this.state.storage.put(storageKey, base64);
       console.log(`relay stored: key=${storageKey} bytes=${body.byteLength}`);
 
-      const recipient = this.peers.get(recipientFp);
+      const recipient = this.primaryFor(recipientFp);
       if (recipient) {
         try {
           const pending = await this.state.storage.list({ prefix: `relay:${recipientFp}:` });
           console.log(`relay outbox_ping: fp=${recipientFp.slice(0, 8)} count=${pending.size}`);
-          recipient.ws.send(JSON.stringify({ type: 'outbox_ping', count: pending.size }));
+          recipient.send(JSON.stringify({ type: 'outbox_ping', count: pending.size }));
         } catch (e) {
           console.log(`relay outbox_ping error: ${e}`);
         }
@@ -138,24 +138,15 @@ export class SignalingRoom implements DurableObject {
     }
 
     const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
-    server.accept();
-
-    server.addEventListener('message', async (event) => {
-      await this.handleMessage(server, event.data as string);
-    });
-
-    server.addEventListener('close', () => {
-      this.handleClose(server);
-    });
-
-    server.addEventListener('error', () => {
-      this.handleClose(server);
-    });
-
+    // Hibernation accept: DO can evict from memory between events; we are billed
+    // for duration only while a handler (webSocketMessage / fetch / alarm) runs,
+    // not while the WS sits idle.
+    this.state.acceptWebSocket(server);
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private async handleMessage(ws: WebSocket, text: string): Promise<void> {
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    const text = typeof message === 'string' ? message : new TextDecoder().decode(message);
     let signal: Signal;
     try {
       signal = JSON.parse(text) as Signal;
@@ -165,36 +156,28 @@ export class SignalingRoom implements DurableObject {
 
     if (signal.type === 'hello') {
       const { fingerprint, stunAddr } = signal;
-
-      // Track every WS connection, keyed by WS object (survives fingerprint overwrites)
-      this.wsToFp.set(ws, fingerprint);
-
-      // Only update peers if no primary exists for this fingerprint yet
-      // (keeps the first/presence connection as primary; path3 send WS is secondary)
-      if (!this.peers.has(fingerprint)) {
-        this.peers.set(fingerprint, { ws, fingerprint, stunAddr });
-      } else if (this.peers.get(fingerprint)!.ws === ws) {
-        // Same WS reconnecting (e.g. stunAddr changed) — update
-        this.peers.get(fingerprint)!.stunAddr = stunAddr;
-      }
-      // else: secondary connection from same device — don't overwrite primary
+      const becomePrimary = !this.primaryFor(fingerprint);
+      ws.serializeAttachment({ fingerprint, stunAddr, primary: becomePrimary } as WsAttach);
 
       this.broadcastPresence(fingerprint, true);
 
-      // Send peer_hello to this WS for all OTHER peers currently in the room
-      for (const [fp, peer] of this.peers) {
-        if (fp !== fingerprint && peer.ws !== ws) {
-          ws.send(JSON.stringify({ type: 'peer_hello', fingerprint: fp, stunAddr: peer.stunAddr }));
-          // Also notify that peer about this new connection
-          try {
-            peer.ws.send(JSON.stringify({ type: 'peer_hello', fingerprint, stunAddr }));
-          } catch {
-            // peer socket already closed
-          }
+      // Exchange peer_hello with every other primary in the room
+      for (const peer of this.allPrimaries()) {
+        const a = this.attach(peer);
+        if (!a || a.fingerprint === fingerprint || peer === ws) continue;
+        try {
+          ws.send(JSON.stringify({ type: 'peer_hello', fingerprint: a.fingerprint, stunAddr: a.stunAddr }));
+        } catch {
+          // ignore
+        }
+        try {
+          peer.send(JSON.stringify({ type: 'peer_hello', fingerprint, stunAddr }));
+        } catch {
+          // peer socket already closed
         }
       }
 
-      // Notify this peer of any queued relay frames (uses DO storage — strongly consistent)
+      // Notify this peer of any queued relay frames
       try {
         const pending = await this.state.storage.list({ prefix: `relay:${fingerprint}:` });
         if (pending.size > 0) {
@@ -208,9 +191,9 @@ export class SignalingRoom implements DurableObject {
     }
 
     if (signal.type === 'outbox_ready') {
-      // Look up fingerprint by WebSocket identity (handles secondary/path3 connections)
-      const senderFp = this.wsToFp.get(ws);
-      console.log(`outbox_ready: senderFp=${senderFp?.slice(0, 8) ?? 'unknown'} peers=[${[...this.peers.keys()].map(k => k.slice(0, 8)).join(',')}] wsToFp size=${this.wsToFp.size}`);
+      const a = this.attach(ws);
+      const senderFp = a?.fingerprint;
+      console.log(`outbox_ready: senderFp=${senderFp?.slice(0, 8) ?? 'unknown'}`);
       if (!senderFp) return;
 
       try {
@@ -228,27 +211,47 @@ export class SignalingRoom implements DurableObject {
     }
   }
 
-  private handleClose(ws: WebSocket): void {
-    const closedFp = this.wsToFp.get(ws);
-    this.wsToFp.delete(ws);
+  async webSocketClose(ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): Promise<void> {
+    this.handleClose(ws);
+  }
 
-    if (closedFp) {
-      const primary = this.peers.get(closedFp);
-      if (primary && primary.ws === ws) {
-        // Primary connection closed — remove from peers
-        this.peers.delete(closedFp);
-        this.broadcastPresence(closedFp, false);
-      }
-      // If secondary (path3) WS closed, peers entry unchanged — presence stays alive
+  async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
+    this.handleClose(ws);
+  }
+
+  private handleClose(ws: WebSocket): void {
+    const a = this.attach(ws);
+    if (!a) return;
+    // Only the primary closing flips presence offline. Secondary (path3 send WS)
+    // closes leave presence intact — matching the pre-hibernation behaviour.
+    if (a.primary) {
+      this.broadcastPresence(a.fingerprint, false);
     }
+  }
+
+  private attach(ws: WebSocket): WsAttach | null {
+    try {
+      return (ws.deserializeAttachment() as WsAttach) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private allPrimaries(): WebSocket[] {
+    return this.state.getWebSockets().filter((ws) => this.attach(ws)?.primary === true);
+  }
+
+  private primaryFor(fingerprint: string): WebSocket | undefined {
+    return this.allPrimaries().find((ws) => this.attach(ws)?.fingerprint === fingerprint);
   }
 
   private broadcastPresence(excludeFp: string, online: boolean): void {
     const msg = JSON.stringify({ type: 'presence', online });
-    for (const [fp, peer] of this.peers) {
-      if (fp !== excludeFp) {
+    for (const ws of this.allPrimaries()) {
+      const a = this.attach(ws);
+      if (a && a.fingerprint !== excludeFp) {
         try {
-          peer.ws.send(msg);
+          ws.send(msg);
         } catch {
           // ignore closed sockets
         }
