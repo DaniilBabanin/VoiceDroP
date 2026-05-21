@@ -65,7 +65,8 @@ class MessagePayloadTest {
         // surface it as Parsed.Unknown so the dispatcher can RECEIPT-ack and
         // drop silently. Throwing here would cause the txn to roll back, the
         // RECEIPT would never enqueue, and the sender's outbox would jam.
-        for (kind in intArrayOf(0x03, 0x10, 0x7F, 0x80, 0xFF)) {
+        // 0x03 is now KIND_PLAYED and has strict size semantics; start from 0x04.
+        for (kind in intArrayOf(0x04, 0x10, 0x7F, 0x80, 0xFF)) {
             val body = ByteArray(7) { 0xAA.toByte() }
             val bytes = ByteArray(1 + body.size).also {
                 it[0] = kind.toByte()
@@ -143,10 +144,47 @@ class MessagePayloadTest {
     @Test
     fun kindBytes_arePinned() {
         // Flipping these values silently breaks interop with any prior v1.2.0.0
-        // build in the field. The forward-compat contract relies on 0x00-0x02
-        // staying locked in; new kinds add at 0x03 and up.
+        // build in the field. The forward-compat contract relies on 0x00-0x03
+        // staying locked in; new kinds add at 0x04 and up.
         assertEquals(0x00.toByte(), MessagePayload.KIND_VOICE)
         assertEquals(0x01.toByte(), MessagePayload.KIND_HELLO)
         assertEquals(0x02.toByte(), MessagePayload.KIND_DELETE)
+        assertEquals(0x03.toByte(), MessagePayload.KIND_PLAYED)
+    }
+
+    @Test
+    fun played_roundTrip_preservesTargetUuid() {
+        val target = UUID.fromString("01020304-0506-0708-090a-0b0c0d0e0f10")
+        val encoded = MessagePayload.encodePlayed(target)
+        assertEquals(17, encoded.size)
+        assertEquals(MessagePayload.KIND_PLAYED, encoded[0])
+
+        val parsed = MessagePayload.parse(encoded)
+        assertTrue("expected Played, got $parsed", parsed is MessagePayload.Parsed.Played)
+        parsed as MessagePayload.Parsed.Played
+        assertEquals(target, parsed.targetUuid)
+    }
+
+    @Test
+    fun played_truncatedBody_throwsInvalidPayload() {
+        val truncated = ByteArray(10).apply { this[0] = MessagePayload.KIND_PLAYED }
+        try {
+            MessagePayload.parse(truncated)
+            fail("expected InvalidPayload")
+        } catch (e: InvalidPayload) {
+            assertTrue("message mentions PLAYED size, was: ${e.message}", e.message?.contains("PLAYED size") == true)
+        }
+    }
+
+    @Test
+    fun unknownKind_0x04_stillReturnsUnknown_forwardCompatLeverIntact() {
+        // Regression: confirm the forward-compat lever still works for the NEXT
+        // extension after KIND_PLAYED (e.g. KIND_REACTION = 0x04 in the future).
+        val bytes = byteArrayOf(0x04, 0x00, 0x01, 0x02, 0x03)
+        val parsed = MessagePayload.parse(bytes)
+        assertTrue("expected Unknown for kind=0x04, got $parsed", parsed is MessagePayload.Parsed.Unknown)
+        parsed as MessagePayload.Parsed.Unknown
+        assertEquals(0x04, parsed.kind)
+        assertEquals(4, parsed.bodyLen)
     }
 }

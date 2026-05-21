@@ -13,6 +13,7 @@ import com.voicedrop.crypto.MessagePayload
 import com.voicedrop.crypto.RatchetCryptoFailure
 import com.voicedrop.crypto.RatchetDecryptAndPersist
 import com.voicedrop.crypto.RatchetStatePersistence
+import com.voicedrop.crypto.PlayedInboundHandler
 import com.voicedrop.crypto.ReceiptInboundHandler
 import com.voicedrop.crypto.ResetReceive
 import com.voicedrop.crypto.ResetRetransmitJob
@@ -82,6 +83,7 @@ class ConnectionManager(
     private val db: AppDatabase,
     private val ratchetReceiver: RatchetDecryptAndPersist,
     private val receiptInboundHandler: ReceiptInboundHandler,
+    private val playedInboundHandler: PlayedInboundHandler,
     private val resetReceive: ResetReceive,
     private val autoResetTrigger: AutoResetTrigger,
     private val ingestRateLimiter: IngestRateLimiter,
@@ -533,6 +535,15 @@ class ConnectionManager(
                 Log.i(TAG, "DELETE from ${contact.id.take(8)} target=${targetUuidStr.take(8)} rowsDeleted=$deleted")
                 null
             }
+            is MessagePayload.Parsed.Played -> {
+                // Spec 16-played-receipt.md §3 — the SQL UPDATE that flips the
+                // sender row to STATE_PLAYED runs in postDeliveredSideEffects,
+                // outside this receive txn and outside the per-contact mutex held
+                // by RatchetDecryptAndPersist. Doing it here would deadlock on the
+                // non-reentrant kotlinx Mutex.
+                Log.i(TAG, "PLAYED from ${contact.id.take(8)} target=${parsed.targetUuid.toString().take(8)}")
+                null
+            }
             is MessagePayload.Parsed.Unknown -> {
                 // Forward-compat contract: RECEIPT will still go out (the ratchet
                 // path enqueues it before the callback fires); we silently drop
@@ -580,7 +591,7 @@ class ConnectionManager(
         )
     }
 
-    private fun postDeliveredSideEffects(
+    private suspend fun postDeliveredSideEffects(
         result: RatchetDecryptAndPersist.Result.Delivered,
         contact: ContactEntity
     ) {
@@ -602,6 +613,12 @@ class ConnectionManager(
                 val opusFile = File(context.filesDir, "messages/$targetUuidStr.opus")
                 if (opusFile.exists()) opusFile.delete()
                 notificationHelper.cancelNotification(targetUuidStr.hashCode())
+            }
+            is MessagePayload.Parsed.Played -> {
+                // Runs outside the receive txn and outside RatchetDecryptAndPersist's
+                // contact mutex. The handler reacquires the mutex itself before its
+                // own runInTransaction.
+                playedInboundHandler.onPlayedDecrypted(contact.id, parsed.targetUuid)
             }
             else -> { /* HELLO, Unknown — nothing to do */ }
         }

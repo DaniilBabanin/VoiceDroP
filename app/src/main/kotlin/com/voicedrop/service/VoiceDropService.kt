@@ -18,6 +18,7 @@ import com.voicedrop.crypto.Bootstrap
 import com.voicedrop.crypto.KeyManager
 import com.voicedrop.crypto.RatchetDecryptAndPersist
 import com.voicedrop.crypto.RatchetEncryptAndSend
+import com.voicedrop.crypto.PlayedInboundHandler
 import com.voicedrop.crypto.ReceiptInboundHandler
 import com.voicedrop.crypto.ResetReceive
 import com.voicedrop.crypto.ResetRetransmitJob
@@ -109,6 +110,7 @@ class VoiceDropService : Service() {
         )
         val ratchetReceiver = RatchetDecryptAndPersist(db, keyManager, ownFingerprint32)
         val receiptInboundHandler = ReceiptInboundHandler(db)
+        val playedInboundHandler = PlayedInboundHandler(db)
         resetReceive = ResetReceive(
             db = db,
             wrapMac = keyManager,
@@ -151,6 +153,7 @@ class VoiceDropService : Service() {
             db = db,
             ratchetReceiver = ratchetReceiver,
             receiptInboundHandler = receiptInboundHandler,
+            playedInboundHandler = playedInboundHandler,
             resetReceive = resetReceive,
             autoResetTrigger = autoResetTrigger,
             ingestRateLimiter = ingestRateLimiter,
@@ -194,6 +197,7 @@ class VoiceDropService : Service() {
                 val relayFallback = prefs.getBoolean(PREF_RELAY_FALLBACK_ENABLED, true)
                 val ratchetReceiver = RatchetDecryptAndPersist(db, keyManager, ownFingerprint32)
                 val receiptInboundHandler = ReceiptInboundHandler(db)
+                val playedInboundHandler = PlayedInboundHandler(db)
                 val autoResetTrigger = AutoResetTrigger(db, resetReceive)
                 val ingestRateLimiter = IngestRateLimiter()
                 connectionManager = ConnectionManager(
@@ -204,6 +208,7 @@ class VoiceDropService : Service() {
                     db = db,
                     ratchetReceiver = ratchetReceiver,
                     receiptInboundHandler = receiptInboundHandler,
+                    playedInboundHandler = playedInboundHandler,
                     resetReceive = resetReceive,
                     autoResetTrigger = autoResetTrigger,
                     ingestRateLimiter = ingestRateLimiter,

@@ -14,6 +14,7 @@ import java.util.UUID
  * kind = 0x00  VOICE   → [durationMs:4][deleteAfterMs:8][opusBytes:N]
  * kind = 0x01  HELLO   → []                                          ← bootstrap sentinel
  * kind = 0x02  DELETE  → [targetUuid:16]
+ * kind = 0x03  PLAYED  → [targetUuid:16]                             ← spec 16-played-receipt.md
  * ```
  *
  * Forward-compat contract (locked in by v1.2.0.0): a receiver that sees an
@@ -29,6 +30,7 @@ object MessagePayload {
     const val KIND_VOICE: Byte = 0x00
     const val KIND_HELLO: Byte = 0x01
     const val KIND_DELETE: Byte = 0x02
+    const val KIND_PLAYED: Byte = 0x03
 
     private const val KIND_BYTES = 1
     private const val DURATION_BYTES = 4
@@ -38,6 +40,7 @@ object MessagePayload {
     private const val VOICE_HEADER_BYTES = KIND_BYTES + DURATION_BYTES + DELETE_AFTER_BYTES
     private const val HELLO_BYTES = KIND_BYTES
     private const val DELETE_BYTES = KIND_BYTES + UUID_BYTES
+    private const val PLAYED_BYTES = KIND_BYTES + UUID_BYTES   // 17, same shape as DELETE
 
     sealed class Parsed {
         data class Voice(val durationMs: Int, val deleteAfterMs: Long, val opusBytes: ByteArray) : Parsed() {
@@ -57,6 +60,7 @@ object MessagePayload {
         }
         object Hello : Parsed()
         data class Delete(val targetUuid: UUID) : Parsed()
+        data class Played(val targetUuid: UUID) : Parsed()
         /** Unknown kind. Per the forward-compat contract: dispatcher MUST drop silently after RECEIPT enqueue. */
         data class Unknown(val kind: Int, val bodyLen: Int) : Parsed()
     }
@@ -74,6 +78,13 @@ object MessagePayload {
     fun encodeDelete(targetUuid: UUID): ByteArray =
         ByteBuffer.allocate(DELETE_BYTES).order(ByteOrder.BIG_ENDIAN).apply {
             put(KIND_DELETE)
+            putLong(targetUuid.mostSignificantBits)
+            putLong(targetUuid.leastSignificantBits)
+        }.array()
+
+    fun encodePlayed(targetUuid: UUID): ByteArray =
+        ByteBuffer.allocate(PLAYED_BYTES).order(ByteOrder.BIG_ENDIAN).apply {
+            put(KIND_PLAYED)
             putLong(targetUuid.mostSignificantBits)
             putLong(targetUuid.leastSignificantBits)
         }.array()
@@ -102,6 +113,11 @@ object MessagePayload {
                 if (bytes.size != DELETE_BYTES) throw InvalidPayload("DELETE size=${bytes.size} != $DELETE_BYTES")
                 val buf = ByteBuffer.wrap(bytes, KIND_BYTES, UUID_BYTES).order(ByteOrder.BIG_ENDIAN)
                 Parsed.Delete(UUID(buf.long, buf.long))
+            }
+            KIND_PLAYED -> {
+                if (bytes.size != PLAYED_BYTES) throw InvalidPayload("PLAYED size=${bytes.size} != $PLAYED_BYTES")
+                val buf = ByteBuffer.wrap(bytes, KIND_BYTES, UUID_BYTES).order(ByteOrder.BIG_ENDIAN)
+                Parsed.Played(UUID(buf.long, buf.long))
             }
             else -> Parsed.Unknown(kind.toInt() and 0xff, body)
         }
