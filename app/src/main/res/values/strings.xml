@@ -129,4 +129,12 @@
     <string name="empty_contacts_cta">Pair a contact</string>
     <string name="empty_messages_title">No voice drops yet</string>
     <string name="empty_messages_body">Record from the home-screen widget or the Quick Settings tile.</string>
+
+    <!-- Design refresh #2 §A — contact-row preview text when no messages exist. -->
+    <string name="contact_preview_no_messages">Tap to send the first voice drop.</string>
+
+    <!-- Design refresh #2 §B — record-in-chat FAB on MessageHistoryActivity. -->
+    <string name="action_record">Record</string>
+    <string name="action_stop">Stop</string>
+    <string name="recording_other_contact">Recording for %1$s — stop that first.</string>
 </resources>
