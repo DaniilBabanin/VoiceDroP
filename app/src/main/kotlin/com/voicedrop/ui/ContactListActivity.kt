@@ -122,6 +122,33 @@ class ContactListActivity : AppCompatActivity() {
         ).setOnClickListener { fab.callOnClick() }
         EdgeToEdgeSetup.applyBottomInset(fab)
 
+        val recordFab = findViewById<FloatingActionButton>(R.id.fab_record_fanout)
+        val slideTrack = findViewById<View>(R.id.slide_to_cancel_track)
+        EdgeToEdgeSetup.applyBottomInset(recordFab)
+        val recordGestureDetector = RecordGestureDetector(
+            view = recordFab,
+            onStart = { startFanoutRecording() },
+            onStop = { startForegroundService(VoiceDropService.recordStopIntent(this)) },
+            onCancel = {
+                startForegroundService(VoiceDropService.recordCancelIntent(this))
+                slideTrack.visibility = View.GONE
+            },
+            isRecording = {
+                ServiceState.recordingState.value.state == ServiceState.State.RECORDING
+            },
+            onSlideProgress = { progress ->
+                if (progress > 0f) {
+                    slideTrack.visibility = View.VISIBLE
+                    slideTrack.alpha = 0.3f + (0.7f * progress)
+                    recordFab.translationX = -recordFab.width * progress * 0.6f
+                } else {
+                    slideTrack.visibility = View.GONE
+                    recordFab.translationX = 0f
+                }
+            },
+        )
+        recordFab.setOnTouchListener(recordGestureDetector)
+
         checkOnboarding()
 
         scope.launch {
@@ -226,6 +253,47 @@ class ContactListActivity : AppCompatActivity() {
     private fun formatDurationShort(ms: Int): String {
         val totalSecs = ms / 1000
         return "%d:%02d".format(totalSecs / 60, totalSecs % 60)
+    }
+
+    /**
+     * Spec 18-record-playback-ux.md §2 — contact-list mic FAB. Behaves identically to
+     * [com.voicedrop.service.TalkTileService.onClick]'s IDLE branch: resolve the
+     * active-contact set, filter to bootstrapped (`dhr_pub != null`) recipients, and
+     * fire ACTION_RECORD_START with the resulting id list. Falls back to a contact
+     * picker if no eligible recipients are checked. If RECORD_AUDIO is denied we
+     * re-request via [permissionLauncher]; the user must tap the mic again after
+     * granting (the launcher's onResult only starts the idle service).
+     */
+    private fun startFanoutRecording() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+            return
+        }
+        scope.launch {
+            val contacts = repository.getAllContacts().first()
+            if (contacts.isEmpty()) {
+                return@launch
+            }
+            val eligible = ActiveContactsPrefs.resolveRecipients(
+                this@ContactListActivity, contacts
+            ).filter { it.dhr_pub != null }
+            if (eligible.isNotEmpty()) {
+                startForegroundService(
+                    VoiceDropService.recordStartAllIntent(
+                        this@ContactListActivity,
+                        eligible.map { it.id }
+                    )
+                )
+                return@launch
+            }
+            if (contacts.any { it.dhr_pub != null }) {
+                ContactPickerDialog(this@ContactListActivity, contacts) { id ->
+                    startForegroundService(
+                        VoiceDropService.recordStartAllIntent(this@ContactListActivity, listOf(id))
+                    )
+                }.show()
+            }
+        }
     }
 
     /**

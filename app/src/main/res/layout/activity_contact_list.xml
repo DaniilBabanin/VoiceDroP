@@ -50,15 +50,62 @@
         android:layout_height="match_parent"
         android:visibility="gone"/>
 
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/fab_add_contact"
+    <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|end"
         android:layout_margin="16dp"
-        android:contentDescription="@string/add_contact"
-        app:backgroundTint="?attr/colorTertiary"
-        app:tint="?attr/colorOnTertiary"
-        app:srcCompat="@android:drawable/ic_input_add"/>
+        android:orientation="vertical"
+        android:gravity="end"
+        android:clipChildren="false">
+
+        <FrameLayout
+            android:id="@+id/fab_record_wrapper"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:clipChildren="false">
+
+            <LinearLayout
+                android:id="@+id/slide_to_cancel_track"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_vertical|start"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingEnd="64dp"
+                android:visibility="gone"
+                android:alpha="0.3">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/slide_to_cancel"
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textAppearance="?attr/textAppearanceLabelLarge"/>
+            </LinearLayout>
+
+            <com.google.android.material.floatingactionbutton.FloatingActionButton
+                android:id="@+id/fab_record_fanout"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:src="@drawable/ic_mic"
+                android:contentDescription="@string/action_record"
+                app:backgroundTint="?attr/colorPrimary"
+                app:tint="?attr/colorOnPrimary"/>
+        </FrameLayout>
+
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fab_add_contact"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:contentDescription="@string/add_contact"
+            app:backgroundTint="?attr/colorSecondaryContainer"
+            app:tint="?attr/colorOnSecondaryContainer"
+            app:fabSize="mini"
+            app:srcCompat="@android:drawable/ic_input_add"/>
+
+    </LinearLayout>
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>
