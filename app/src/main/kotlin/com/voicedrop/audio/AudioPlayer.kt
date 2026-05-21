@@ -66,10 +66,10 @@ class AudioPlayer {
         val completion = CompletableDeferred<Unit>()
 
         internal fun start() {
-            playJob = handleScope.launch { runLoop() }
+            playJob = handleScope.launch { runLoop(this) }
         }
 
-        private suspend fun runLoop() {
+        private suspend fun runLoop(scope: CoroutineScope) {
             try {
                 val minBufSize = AudioTrack.getMinBufferSize(
                     sampleRate,
@@ -92,9 +92,9 @@ class AudioPlayer {
 
                 try {
                     val lenBuf = ByteArray(4)
-                    outer@ while (handleScope.isActive) {
-                        while (paused.get() && handleScope.isActive) delay(20)
-                        if (!handleScope.isActive) break
+                    outer@ while (scope.isActive) {
+                        while (paused.get() && scope.isActive) delay(20)
+                        if (!scope.isActive) break
                         val ofs = cursor.get()
                         if (ofs + 4 > opusStream.size) {
                             reachedNaturalEnd = true
@@ -194,6 +194,10 @@ class AudioPlayer {
         }
 
         suspend fun stop() {
+            // pause()+flush() discards queued PCM and unblocks any in-flight
+            // audioTrack.write() inside runLoop so cancellation is observed promptly.
+            audioTrack?.runCatching { pause() }
+            audioTrack?.runCatching { flush() }
             playJob?.cancel()
             playJob?.join()
             if (!completion.isCompleted) completion.complete(Unit)
