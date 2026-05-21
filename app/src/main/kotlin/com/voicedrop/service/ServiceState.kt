@@ -27,6 +27,9 @@ object ServiceState {
     private val _playingProgress = MutableStateFlow(0f)
     val playingProgress: StateFlow<Float> = _playingProgress
 
+    private val _playingSpeed = MutableStateFlow(1f)
+    val playingSpeed: StateFlow<Float> = _playingSpeed
+
     fun updateState(
         state: State,
         contactIds: List<String>,
@@ -51,5 +54,9 @@ object ServiceState {
 
     fun resetPlayingProgress() {
         _playingProgress.value = 0f
+    }
+
+    fun setPlayingSpeed(speed: Float) {
+        _playingSpeed.value = speed
     }
 }

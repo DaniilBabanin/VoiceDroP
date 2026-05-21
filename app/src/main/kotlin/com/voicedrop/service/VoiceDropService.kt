@@ -38,7 +38,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
@@ -75,7 +74,7 @@ class VoiceDropService : Service() {
     private var recordStartElapsedRealtime: Long = 0L
     private var recordingJob: Deferred<AudioRecorder.RecordResult>? = null
     private var wakeLock: PowerManager.WakeLock? = null
-    private var playbackJob: Job? = null
+    private var playbackHandle: AudioPlayer.PlaybackHandle? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -245,6 +244,29 @@ class VoiceDropService : Service() {
                 play(uuid)
             }
             ACTION_STOP_PLAY -> stopPlay()
+            ACTION_PAUSE -> {
+                playbackHandle?.let { handle ->
+                    scope.launch { if (!handle.completion.isCompleted) handle.pause() }
+                }
+            }
+            ACTION_RESUME -> {
+                playbackHandle?.let { handle ->
+                    scope.launch { if (!handle.completion.isCompleted) handle.resume() }
+                }
+            }
+            ACTION_SEEK -> {
+                val p = intent.getFloatExtra(EXTRA_PROGRESS, -1f)
+                if (p in 0f..1f) {
+                    playbackHandle?.let { handle -> scope.launch { handle.seek(p) } }
+                }
+            }
+            ACTION_SET_SPEED -> {
+                val s = intent.getFloatExtra(EXTRA_SPEED, -1f)
+                if (s in 0.5f..2f) {
+                    playbackHandle?.setSpeed(s)
+                    ServiceState.setPlayingSpeed(s)
+                }
+            }
         }
         return START_STICKY
     }
@@ -405,10 +427,11 @@ class VoiceDropService : Service() {
     }
 
     fun play(uuid: String) {
-        playbackJob?.cancel()
+        playbackHandle?.let { handle -> scope.launch { handle.stop() } }
         ServiceState.setPlayingUuid(uuid)
         ServiceState.resetPlayingProgress()
-        playbackJob = scope.launch {
+        ServiceState.setPlayingSpeed(1f)
+        scope.launch {
             val notifId = uuid.hashCode()
             try {
                 val message = repository.getMessage(uuid) ?: return@launch
@@ -420,7 +443,7 @@ class VoiceDropService : Service() {
                 notificationHelper.updatePlaybackProgress(notifId, 0, message.durationMs)
 
                 val needsPeaks = message.waveformPeaks == null
-                audioPlayer.play(
+                val handle = audioPlayer.play(
                     opusStream = opusBytes,
                     onProgress = { progress ->
                         ServiceState.setPlayingProgress(progress)
@@ -435,6 +458,8 @@ class VoiceDropService : Service() {
                         }
                     } else null,
                 )
+                playbackHandle = handle
+                handle.completion.await()
 
                 // Spec 16-played-receipt.md §3 — fire KIND_PLAYED to the sender on
                 // first inbound play. Guard order matters: read state BEFORE update.
@@ -458,16 +483,19 @@ class VoiceDropService : Service() {
                 if (ServiceState.playingUuid.value == uuid) {
                     ServiceState.setPlayingUuid(null)
                     ServiceState.resetPlayingProgress()
+                    ServiceState.setPlayingSpeed(1f)
                 }
+                playbackHandle = null
             }
         }
     }
 
     private fun stopPlay() {
-        playbackJob?.cancel()
-        playbackJob = null
+        playbackHandle?.let { handle -> scope.launch { handle.stop() } }
+        playbackHandle = null
         ServiceState.setPlayingUuid(null)
         ServiceState.resetPlayingProgress()
+        ServiceState.setPlayingSpeed(1f)
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -528,12 +556,18 @@ class VoiceDropService : Service() {
         const val ACTION_RECORD_CANCEL = "com.voicedrop.ACTION_RECORD_CANCEL"
         const val ACTION_PLAY = "com.voicedrop.ACTION_PLAY"
         const val ACTION_STOP_PLAY = "com.voicedrop.ACTION_STOP_PLAY"
+        const val ACTION_PAUSE = "com.voicedrop.ACTION_PAUSE"
+        const val ACTION_RESUME = "com.voicedrop.ACTION_RESUME"
+        const val ACTION_SEEK = "com.voicedrop.ACTION_SEEK"
+        const val ACTION_SET_SPEED = "com.voicedrop.ACTION_SET_SPEED"
         const val ACTION_RELOAD_CONFIG = "com.voicedrop.ACTION_RELOAD_CONFIG"
         /** DR17.5 W3 — UI hook for "kick the outbox now" (e.g. after pairing auto-HELLO). */
         const val ACTION_FLUSH_OUTBOX = "com.voicedrop.ACTION_FLUSH_OUTBOX"
         const val EXTRA_CONTACT_ID = "contact_id"
         const val EXTRA_CONTACT_IDS = "contact_ids"    // string array, used by tile + All-widget
         const val EXTRA_UUID = "uuid"
+        const val EXTRA_PROGRESS = "progress"
+        const val EXTRA_SPEED = "speed"
         const val NOTIFICATION_ID_IDLE = 1000
         const val NOTIFICATION_ID_RECORDING = 1001
         private const val TAG = "VoiceDropService"
@@ -569,6 +603,28 @@ class VoiceDropService : Service() {
         fun stopPlayIntent(context: Context) =
             Intent(context, VoiceDropService::class.java).apply {
                 action = ACTION_STOP_PLAY
+            }
+
+        fun pauseIntent(context: Context) =
+            Intent(context, VoiceDropService::class.java).apply {
+                action = ACTION_PAUSE
+            }
+
+        fun resumeIntent(context: Context) =
+            Intent(context, VoiceDropService::class.java).apply {
+                action = ACTION_RESUME
+            }
+
+        fun seekIntent(context: Context, progress: Float) =
+            Intent(context, VoiceDropService::class.java).apply {
+                action = ACTION_SEEK
+                putExtra(EXTRA_PROGRESS, progress)
+            }
+
+        fun setSpeedIntent(context: Context, speed: Float) =
+            Intent(context, VoiceDropService::class.java).apply {
+                action = ACTION_SET_SPEED
+                putExtra(EXTRA_SPEED, speed)
             }
 
         fun flushOutboxIntent(context: Context) =
