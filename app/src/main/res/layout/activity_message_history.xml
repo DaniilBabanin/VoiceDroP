@@ -17,6 +17,12 @@
             android:layout_height="?attr/actionBarSize"
             app:navigationIcon="?attr/homeAsUpIndicator"
             app:titleTextAppearance="@style/TextAppearance.VoiceDrop.Wordmark"/>
+
+        <include
+            android:id="@+id/banner_recording"
+            layout="@layout/banner_recording"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"/>
     </com.google.android.material.appbar.AppBarLayout>
 
     <androidx.recyclerview.widget.RecyclerView

@@ -26,6 +26,7 @@ import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.voicedrop.R
 import com.voicedrop.crypto.AeadFailureSoftPrompt
 import com.voicedrop.service.AutoDeleteWorker
+import com.voicedrop.service.ServiceState
 import com.voicedrop.service.VoiceDropService
 import com.voicedrop.storage.ActiveContactsPrefs
 import com.voicedrop.storage.AppDatabase
@@ -139,6 +140,10 @@ class ContactListActivity : AppCompatActivity() {
                 }
         }
         startAeadBannerPolling()
+
+        val recordingBannerRoot = findViewById<View>(R.id.banner_recording)
+        RecordingBanner(recordingBannerRoot, repository, scope)
+            .bind(ServiceState.recordingState)
     }
 
     /**

@@ -151,6 +151,10 @@ class MessageHistoryActivity : AppCompatActivity() {
                 updateFabState(fab, state)
             }
         }
+
+        val recordingBannerRoot = findViewById<View>(R.id.banner_recording)
+        RecordingBanner(recordingBannerRoot, repository, scope)
+            .bind(ServiceState.recordingState)
     }
 
     /**
