@@ -395,10 +395,10 @@ class VoiceDropService : Service() {
             } catch (e: Exception) {
                 Log.w(TAG, "cancelRecording: recorder teardown failed (ignored)", e)
             } finally {
+                startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
                 ServiceState.updateState(ServiceState.State.IDLE, emptyList())
                 VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
                 AllWidgetProvider.refreshAll(this@VoiceDropService)
-                startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
                 Log.i(TAG, "recording cancelled for ${contactIds.size} recipient(s); buffer discarded")
             }
         }

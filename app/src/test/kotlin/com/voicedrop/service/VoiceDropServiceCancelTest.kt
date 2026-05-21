@@ -1,7 +1,6 @@
 package com.voicedrop.service
 
 import android.content.Context
-import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.ContactEntity
@@ -45,20 +44,22 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33])
 class VoiceDropServiceCancelTest {
 
-    private lateinit var db: AppDatabase
     private lateinit var ctx: Context
 
     @Before
     fun setUp() {
         ctx = ApplicationProvider.getApplicationContext()
-        db = Room.inMemoryDatabaseBuilder(ctx, AppDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
     }
 
+    /**
+     * The service uses the on-disk `AppDatabase.getInstance(ctx)` singleton, which
+     * persists across tests in the same JVM. Wipe all tables so a later test never
+     * sees rows we inserted (the seeded contact, any frames the service queued
+     * during start, etc.).
+     */
     @After
-    fun tearDown() {
-        db.close()
+    fun tearDown() = runBlocking {
+        AppDatabase.getInstance(ctx).clearAllTables()
     }
 
     /**
@@ -106,6 +107,19 @@ class VoiceDropServiceCancelTest {
         // The recording coroutine launches on Dispatchers.IO; Robolectric's
         // scheduler doesn't auto-drain it.
         delay(200)
+
+        // Guard against a false green: if AudioRecorder.start() throws under
+        // Robolectric (no audio hardware), startRecording's catch block flips
+        // ServiceState back to IDLE but leaves recordingContactIds emptied, so
+        // the subsequent cancel would no-op and the IDLE / no-DB-row / no-outbox
+        // assertions would all pass even if cancelRecording were deleted. Fail
+        // loudly instead — if this trips in CI it's a signal the round-trip
+        // path needs more setup, not that the cancel logic is broken.
+        assertEquals(
+            "test prerequisite: recording must actually be RECORDING before cancel",
+            ServiceState.State.RECORDING,
+            ServiceState.recordingState.value.state,
+        )
 
         val cancelIntent = VoiceDropService.recordCancelIntent(ctx)
         service.onStartCommand(cancelIntent, 0, 2)
