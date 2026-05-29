@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { getAuthSecret, getServerKeyPair, serverPublicRaw, toHex, fromHex, b64encode, b64decode } from '../src/auth';
+import { getAuthSecret, getServerKeyPair, serverPublicRaw, toHex, fromHex, b64encode, b64decode, verifyProof, buildProofMac } from '../src/auth';
 
 // Minimal in-memory storage stub matching the bits of DurableObjectStorage we use.
 class MemStore {
@@ -33,5 +33,42 @@ describe('auth helpers', () => {
     const pub2 = await serverPublicRaw(kp2);
     expect(pub1.length).toBe(32);
     expect(toHex(pub1)).toBe(toHex(pub2));
+  });
+});
+
+describe('verifyProof', () => {
+  it('accepts a correct proof and rejects a tampered mac', async () => {
+    const server = (await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits'])) as CryptoKeyPair;
+    const identity = (await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits'])) as CryptoKeyPair;
+    const identityPubRaw = new Uint8Array(await crypto.subtle.exportKey('raw', identity.publicKey));
+    const fpBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', identityPubRaw));
+    const nonce = new Uint8Array(16); crypto.getRandomValues(nonce);
+
+    // Client side computes ss with its private key against serverPub:
+    const serverPubRaw = new Uint8Array(await crypto.subtle.exportKey('raw', server.publicKey));
+    const mac = await buildProofMac(identity.privateKey, serverPubRaw, nonce, fpBytes); // returns Uint8Array
+
+    expect(await verifyProof(server.privateKey, identityPubRaw, nonce, fpBytes, b64encode(mac))).toBe(true);
+
+    const bad = mac.slice(); bad[0] ^= 0xff;
+    expect(await verifyProof(server.privateKey, identityPubRaw, nonce, fpBytes, b64encode(bad))).toBe(false);
+  });
+
+  // GOLDEN cross-language vector — must equal PullAuthTest.golden_vector (Part 0).
+  // Test-only: derive ss from the raw SERVER_PRIV scalar with @noble/curves, since the
+  // worker runtime cannot raw-import a private scalar to a CryptoKey. @noble stays out of src/.
+  it.skip('matches the frozen Kotlin golden vector', async () => {
+    const { x25519 } = await import('@noble/curves/ed25519'); // test dependency only
+    const serverPriv = fromHex('2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40');
+    const identityPub = fromHex('FILL_IDENTITY_PUB_HEX'); // from Part 0
+    const nonce = fromHex('000102030405060708090a0b0c0d0e0f');
+    const fpBytes = fromHex('FILL_FP_BYTES_HEX');         // from Part 0 (== SHA-256(IDENTITY_PUB))
+
+    const ss = x25519.getSharedSecret(serverPriv, identityPub); // server side: X25519(serverPriv, identityPub)
+    const ssKey = await crypto.subtle.importKey('raw', ss, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const ctx = new TextEncoder().encode('vdrop-pull-auth-v1');
+    const msg = new Uint8Array([...ctx, ...nonce, ...fpBytes]);
+    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', ssKey, msg));
+    expect(toHex(mac)).toBe('FILL_GOLDEN_MAC_HEX'); // == Kotlin GOLDEN_MAC
   });
 });

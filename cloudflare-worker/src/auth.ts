@@ -65,3 +65,32 @@ export async function serverPublicRaw(kp: CryptoKeyPair): Promise<Uint8Array> {
 
 // helpers re-used by Task W3/W4
 export { MAC_CONTEXT, concat, beU64, readBeU64 };
+
+// --- DH proof-of-possession (Task W3) ---
+
+// ss = X25519(privKey, peerPubRaw); mac = HMAC-SHA256(ss, CONTEXT || nonce || fpBytes)
+async function macFromSharedSecret(ss: ArrayBuffer, nonce: Uint8Array, fpBytes: Uint8Array): Promise<Uint8Array> {
+  const ssKey = await crypto.subtle.importKey('raw', ss, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const msg = concat(MAC_CONTEXT, nonce, fpBytes);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', ssKey, msg));
+}
+
+// Client-perspective (used in tests): privKey is the identity key, peerPubRaw is serverPub.
+export async function buildProofMac(privKey: CryptoKey, peerPubRaw: Uint8Array, nonce: Uint8Array, fpBytes: Uint8Array): Promise<Uint8Array> {
+  const peerPub = await crypto.subtle.importKey('raw', peerPubRaw, { name: 'X25519' }, false, []);
+  const ss = await crypto.subtle.deriveBits({ name: 'X25519', public: peerPub }, privKey, 256);
+  return macFromSharedSecret(ss, nonce, fpBytes);
+}
+
+// Server-perspective: serverPriv against the client's identityPubRaw, then compare to provided mac.
+export async function verifyProof(
+  serverPriv: CryptoKey, identityPubRaw: Uint8Array, nonce: Uint8Array, fpBytes: Uint8Array, macB64: string,
+): Promise<boolean> {
+  let got: Uint8Array;
+  try { got = b64decode(macB64); } catch { return false; }
+  const identityPub = await crypto.subtle.importKey('raw', identityPubRaw, { name: 'X25519' }, false, []);
+  const ss = await crypto.subtle.deriveBits({ name: 'X25519', public: identityPub }, serverPriv, 256);
+  const expected = await macFromSharedSecret(ss, nonce, fpBytes);
+  if (expected.length !== got.length) return false;
+  return crypto.subtle.timingSafeEqual(expected, got);
+}
