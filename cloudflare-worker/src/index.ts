@@ -199,23 +199,6 @@ export class SignalingRoom implements DurableObject {
       return;
     }
 
-    if (signal.type === 'outbox_ready') {
-      const a = this.attach(ws);
-      const senderFp = a?.fingerprint;
-      if (!senderFp) return;
-
-      try {
-        const pending = await this.state.storage.list({ prefix: `relay:${senderFp}:` });
-        for (const [key, data] of pending) {
-          ws.send(JSON.stringify({ type: 'relay_frame', data: data as string }));
-          await this.state.storage.delete(key);
-        }
-      } catch (e) {
-        console.log(`outbox_ready error: ${e}`);
-      }
-      return;
-    }
-
     if (signal.type === 'auth_request') {
       const a = this.attach(ws);
       if (!a) return;
