@@ -57,19 +57,19 @@ describe('verifyProof', () => {
   // GOLDEN cross-language vector — must equal PullAuthTest.golden_vector (Part 0).
   // Test-only: derive ss from the raw SERVER_PRIV scalar with @noble/curves, since the
   // worker runtime cannot raw-import a private scalar to a CryptoKey. @noble stays out of src/.
-  it.skip('matches the frozen Kotlin golden vector', async () => {
+  it('matches the frozen Kotlin golden vector', async () => {
     const { x25519 } = await import('@noble/curves/ed25519'); // test dependency only
     const serverPriv = fromHex('2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40');
-    const identityPub = fromHex('FILL_IDENTITY_PUB_HEX'); // from Part 0
+    const identityPub = fromHex('07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c'); // from Part 0
     const nonce = fromHex('000102030405060708090a0b0c0d0e0f');
-    const fpBytes = fromHex('FILL_FP_BYTES_HEX');         // from Part 0 (== SHA-256(IDENTITY_PUB))
+    const fpBytes = fromHex('aaa8fff703b50b2297f4f6e13508f72420d96fd01ebb84cb074449caaef64041'); // from Part 0 (== SHA-256(IDENTITY_PUB))
 
     const ss = x25519.getSharedSecret(serverPriv, identityPub); // server side: X25519(serverPriv, identityPub)
     const ssKey = await crypto.subtle.importKey('raw', ss, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
     const ctx = new TextEncoder().encode('vdrop-pull-auth-v1');
     const msg = new Uint8Array([...ctx, ...nonce, ...fpBytes]);
     const mac = new Uint8Array(await crypto.subtle.sign('HMAC', ssKey, msg));
-    expect(toHex(mac)).toBe('FILL_GOLDEN_MAC_HEX'); // == Kotlin GOLDEN_MAC
+    expect(toHex(mac)).toBe('26a80279407ebd04de55ca3702578ebce77debb73129c853caadee7883a32317'); // == Kotlin GOLDEN_MAC
   });
 });
 

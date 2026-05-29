@@ -42,13 +42,13 @@ class PullAuthTest {
     }
 
     // Golden cross-language vector — frozen in BOTH this test and worker test/auth.spec.ts.
-    // Un-skip after Task A1 Step 6 prints the values into Part 0.
-    @org.junit.Ignore("fill GOLDEN_MAC from Task A1 Step 6, then remove @Ignore")
+    // Reference values computed by an independent RFC 7748 impl (Python `cryptography`);
+    // this test pins Tink against that reference, the worker test pins WebCrypto against it.
     @Test fun golden_vector() {
         val serverPub = X25519.publicFromPrivate(serverPriv)
         val identityPub = X25519.publicFromPrivate(identityPriv)
         val fp = PullAuth.fingerprintBytes(identityPub)
         val mac = PullAuth.computeProofMac(identityPriv, serverPub, nonce, fp)
-        assertEquals("FILL_GOLDEN_MAC_HEX", hex(mac))
+        assertEquals("26a80279407ebd04de55ca3702578ebce77debb73129c853caadee7883a32317", hex(mac))
     }
 }
