@@ -5,7 +5,9 @@ export default defineWorkersConfig({
     poolOptions: {
       workers: {
         main: './src/index.ts',
-        miniflare: { compatibilityDate: '2024-01-01' },
+        // nodejs_compat is required by @cloudflare/vitest-pool-workers' harness; the
+        // production worker uses only WebCrypto + DO APIs, so wrangler.toml needs no flag.
+        miniflare: { compatibilityDate: '2024-01-01', compatibilityFlags: ['nodejs_compat'] },
       },
     },
   },
