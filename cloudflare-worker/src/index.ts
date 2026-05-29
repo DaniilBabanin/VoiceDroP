@@ -1,7 +1,7 @@
 import { Signal } from './types';
 import {
   getAuthSecret, getServerKeyPair, serverPublicRaw, verifyProof, mintToken,
-  b64encode, b64decode, toHex,
+  b64encode, b64decode, toHex, verifyToken,
 } from './auth';
 
 export interface Env {
@@ -49,7 +49,10 @@ export default {
       const pullRoomId = env.SIGNALING_ROOM.idFromName(pullRoomKey);
       const pullRoom = env.SIGNALING_ROOM.get(pullRoomId);
       const doResp = await pullRoom.fetch(
-        new Request(`https://internal/pull/${recipientFp}`, { method: 'GET' })
+        new Request(`https://internal/pull/${recipientFp}`, {
+          method: 'GET',
+          headers: { Authorization: request.headers.get('Authorization') ?? '' },
+        })
       );
       const body = await doResp.text();
       return new Response(body, {
@@ -119,6 +122,12 @@ export class SignalingRoom implements DurableObject {
     const pullMatch = url.pathname.match(/^\/pull\/([a-f0-9]{64})$/);
     if (pullMatch && request.method === 'GET') {
       const recipientFp = pullMatch[1];
+      const auth = request.headers.get('Authorization') ?? '';
+      const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+      const secret = await getAuthSecret(this.state.storage);
+      if (!token || !(await verifyToken(secret, token, recipientFp, Date.now()))) {
+        return new Response('Unauthorized', { status: 401 });
+      }
       try {
         const pending = await this.state.storage.list({ prefix: `relay:${recipientFp}:` });
         const frames: string[] = [];
