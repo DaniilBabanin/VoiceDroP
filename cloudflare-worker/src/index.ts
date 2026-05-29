@@ -8,14 +8,14 @@ export interface Env {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Upgrade',
-    };
 
+    // No CORS: every client is the native app over OkHttp (CORS is a
+    // browser-only mechanism). Emitting `Access-Control-Allow-Origin: *` only
+    // served to make this unauthenticated relay reachable from any web origin,
+    // so we drop it entirely rather than scope it. Preflight gets a bare 204
+    // with no allow-origin, which blocks browsers by design.
     if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: corsHeaders });
+      return new Response(null, { status: 204 });
     }
 
     // Relay store: POST /relay/{senderFp}/{recipientFp}
@@ -25,7 +25,7 @@ export default {
       const recipientFp = relayMatch[2];
       const body = await request.arrayBuffer();
       if (body.byteLength === 0) {
-        return new Response('Empty body', { status: 400, headers: corsHeaders });
+        return new Response('Empty body', { status: 400 });
       }
       const roomKey = [senderFp, recipientFp].sort().join('');
       const roomId = env.SIGNALING_ROOM.idFromName(roomKey);
@@ -35,7 +35,6 @@ export default {
       );
       return new Response(doResp.ok ? 'OK' : 'Error', {
         status: doResp.status,
-        headers: corsHeaders,
       });
     }
 
@@ -51,14 +50,14 @@ export default {
       const body = await doResp.text();
       return new Response(body, {
         status: doResp.status,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
       });
     }
 
     // Signaling WebSocket: GET /signal/{roomKey}
     const signalMatch = url.pathname.match(/^\/signal\/([a-f0-9]+)$/);
     if (!signalMatch) {
-      return new Response('Not Found', { status: 404, headers: corsHeaders });
+      return new Response('Not Found', { status: 404 });
     }
 
     const roomKey = signalMatch[1];
@@ -96,19 +95,15 @@ export class SignalingRoom implements DurableObject {
       const uuid = crypto.randomUUID();
       const storageKey = `relay:${recipientFp}:${uuid}`;
       await this.state.storage.put(storageKey, base64);
-      console.log(`relay stored: key=${storageKey} bytes=${body.byteLength}`);
 
       const recipient = this.primaryFor(recipientFp);
       if (recipient) {
         try {
           const pending = await this.state.storage.list({ prefix: `relay:${recipientFp}:` });
-          console.log(`relay outbox_ping: fp=${recipientFp.slice(0, 8)} count=${pending.size}`);
           recipient.send(JSON.stringify({ type: 'outbox_ping', count: pending.size }));
         } catch (e) {
           console.log(`relay outbox_ping error: ${e}`);
         }
-      } else {
-        console.log(`relay stored but recipient fp=${recipientFp.slice(0, 8)} not connected`);
       }
       return new Response('OK', { status: 200 });
     }
@@ -124,7 +119,6 @@ export class SignalingRoom implements DurableObject {
           frames.push(data as string);
           await this.state.storage.delete(key);
         }
-        console.log(`pull: delivered ${frames.length} frame(s) for fp=${recipientFp.slice(0, 8)}`);
         return new Response(JSON.stringify({ frames }), { status: 200 });
       } catch (e) {
         console.log(`pull error: ${e}`);
@@ -181,7 +175,6 @@ export class SignalingRoom implements DurableObject {
       try {
         const pending = await this.state.storage.list({ prefix: `relay:${fingerprint}:` });
         if (pending.size > 0) {
-          console.log(`hello outbox_ping: fp=${fingerprint.slice(0, 8)} count=${pending.size}`);
           ws.send(JSON.stringify({ type: 'outbox_ping', count: pending.size }));
         }
       } catch (e) {
@@ -193,16 +186,13 @@ export class SignalingRoom implements DurableObject {
     if (signal.type === 'outbox_ready') {
       const a = this.attach(ws);
       const senderFp = a?.fingerprint;
-      console.log(`outbox_ready: senderFp=${senderFp?.slice(0, 8) ?? 'unknown'}`);
       if (!senderFp) return;
 
       try {
         const pending = await this.state.storage.list({ prefix: `relay:${senderFp}:` });
-        console.log(`outbox_ready: found ${pending.size} frame(s) for fp=${senderFp.slice(0, 8)}`);
         for (const [key, data] of pending) {
           ws.send(JSON.stringify({ type: 'relay_frame', data: data as string }));
           await this.state.storage.delete(key);
-          console.log(`relay_frame sent and deleted: key=${key}`);
         }
       } catch (e) {
         console.log(`outbox_ready error: ${e}`);
