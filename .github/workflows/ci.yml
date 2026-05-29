@@ -76,3 +76,28 @@ jobs:
           name: voicedrop-debug-${{ github.sha }}
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
+
+  worker-tests:
+    name: Worker tests (vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare-worker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # vitest-pool-workers runs the suite inside workerd. No package-lock is
+      # committed, so use `npm install` (not `npm ci`). The worker auto-deploys
+      # via Cloudflare Git integration with no test gate, so this job is the only
+      # automated check of the mailbox-auth crypto (A1, Finding #1).
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run worker unit tests
+        run: npm test
