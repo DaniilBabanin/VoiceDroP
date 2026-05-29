@@ -66,6 +66,30 @@ export async function serverPublicRaw(kp: CryptoKeyPair): Promise<Uint8Array> {
 // helpers re-used by Task W3/W4
 export { MAC_CONTEXT, concat, beU64, readBeU64 };
 
+// --- bearer token mint/verify (Task W4) ---
+// token = b64( fp32(32) || expiryBE(8) || HMAC(secret, fp32||expiryBE)(32) )  => 72 bytes
+export async function mintToken(secret: CryptoKey, fpBytes: Uint8Array, now: number): Promise<{ token: string; expiresAt: number }> {
+  const expiresAt = now + TOKEN_TTL_MS;
+  const payload = concat(fpBytes, beU64(expiresAt));
+  const tag = new Uint8Array(await crypto.subtle.sign('HMAC', secret, payload));
+  return { token: b64encode(concat(payload, tag)), expiresAt };
+}
+
+export async function verifyToken(secret: CryptoKey, token: string, expectedFpHex: string, now: number): Promise<boolean> {
+  let bytes: Uint8Array;
+  try { bytes = b64decode(token); } catch { return false; }
+  if (bytes.length !== 72) return false;
+  const payload = bytes.subarray(0, 40);
+  const tag = bytes.subarray(40, 72);
+  const fpBytes = bytes.subarray(0, 32);
+  const expiry = readBeU64(bytes.subarray(32, 40));
+  if (expiry < now) return false;
+  if (toHex(fpBytes) !== expectedFpHex) return false;
+  const expected = new Uint8Array(await crypto.subtle.sign('HMAC', secret, payload));
+  if (expected.length !== tag.length) return false;
+  return crypto.subtle.timingSafeEqual(expected, tag);
+}
+
 // --- DH proof-of-possession (Task W3) ---
 
 // ss = X25519(privKey, peerPubRaw); mac = HMAC-SHA256(ss, CONTEXT || nonce || fpBytes)

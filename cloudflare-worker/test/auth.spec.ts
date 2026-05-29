@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { getAuthSecret, getServerKeyPair, serverPublicRaw, toHex, fromHex, b64encode, b64decode, verifyProof, buildProofMac } from '../src/auth';
+import { getAuthSecret, getServerKeyPair, serverPublicRaw, toHex, fromHex, b64encode, b64decode, verifyProof, buildProofMac, mintToken, verifyToken, TOKEN_TTL_MS } from '../src/auth';
 
 // Minimal in-memory storage stub matching the bits of DurableObjectStorage we use.
 class MemStore {
@@ -70,5 +70,31 @@ describe('verifyProof', () => {
     const msg = new Uint8Array([...ctx, ...nonce, ...fpBytes]);
     const mac = new Uint8Array(await crypto.subtle.sign('HMAC', ssKey, msg));
     expect(toHex(mac)).toBe('FILL_GOLDEN_MAC_HEX'); // == Kotlin GOLDEN_MAC
+  });
+});
+
+describe('token mint/verify', () => {
+  it('mints a token that verifies for the right fp and not others', async () => {
+    const store = new MemStore() as any;
+    const secret = await getAuthSecret(store);
+    const fpBytes = new Uint8Array(32); crypto.getRandomValues(fpBytes);
+    const now = 1_700_000_000_000;
+    const { token, expiresAt } = await mintToken(secret, fpBytes, now);
+    expect(expiresAt).toBe(now + TOKEN_TTL_MS);
+    expect(await verifyToken(secret, token, toHex(fpBytes), now + 1000)).toBe(true);
+    expect(await verifyToken(secret, token, toHex(fpBytes), now + TOKEN_TTL_MS + 1)).toBe(false); // expired
+    const otherFp = new Uint8Array(32); crypto.getRandomValues(otherFp);
+    expect(await verifyToken(secret, token, toHex(otherFp), now + 1000)).toBe(false); // wrong fp
+  });
+
+  it('rejects a tampered token and garbage input', async () => {
+    const store = new MemStore() as any;
+    const secret = await getAuthSecret(store);
+    const fpBytes = new Uint8Array(32);
+    const now = 1_700_000_000_000;
+    const { token } = await mintToken(secret, fpBytes, now);
+    const raw = b64decode(token); raw[50] ^= 0xff;
+    expect(await verifyToken(secret, b64encode(raw), toHex(fpBytes), now + 1000)).toBe(false);
+    expect(await verifyToken(secret, 'not base64!!', toHex(fpBytes), now)).toBe(false);
   });
 });
