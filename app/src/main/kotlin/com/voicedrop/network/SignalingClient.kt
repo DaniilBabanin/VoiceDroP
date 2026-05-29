@@ -98,12 +98,12 @@ class SignalingClient(
                 val hello = """{"type":"hello","fingerprint":"$ownFingerprint","stunAddr":"$stunAddr"}"""
                 ws.send(hello)
                 val identityPub = keyManager.getPublicKeyBase64()
-                send(Signal.AuthRequest(identityPub = identityPub))
+                ws.send(json.encodeToString<Signal.AuthRequest>(Signal.AuthRequest(identityPub = identityPub)))
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
-                Log.d(TAG, "onMessage: $text")
                 val sig = parseSignal(text) ?: return
+                Log.d(TAG, "onMessage: ${sig.javaClass.simpleName}")
                 when (sig) {
                     is Signal.AuthChallenge -> handleAuthChallenge(sig)
                     is Signal.AuthToken -> {
