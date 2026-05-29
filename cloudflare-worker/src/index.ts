@@ -1,4 +1,8 @@
 import { Signal } from './types';
+import {
+  getAuthSecret, getServerKeyPair, serverPublicRaw, verifyProof, mintToken,
+  b64encode, b64decode, toHex,
+} from './auth';
 
 export interface Env {
   SIGNALING_ROOM: DurableObjectNamespace;
@@ -72,7 +76,10 @@ export default {
 // `primary` = first WS that hello'd with this fingerprint owns the presence /
 // outbox_ping role; secondary connections (e.g. path3 send WS) attach but stay
 // out of broadcasts.
-type WsAttach = { fingerprint: string; stunAddr: string; primary: boolean };
+type WsAttach = {
+  fingerprint: string; stunAddr: string; primary: boolean;
+  authNonce?: string; authIdentityPub?: string; // b64
+};
 
 export class SignalingRoom implements DurableObject {
   constructor(private state: DurableObjectState, private env: Env) {}
@@ -197,6 +204,39 @@ export class SignalingRoom implements DurableObject {
       } catch (e) {
         console.log(`outbox_ready error: ${e}`);
       }
+      return;
+    }
+
+    if (signal.type === 'auth_request') {
+      const a = this.attach(ws);
+      if (!a) return;
+      const identityPubRaw = b64decode(signal.identityPub);
+      const fpBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', identityPubRaw));
+      if (toHex(fpBytes) !== a.fingerprint) return; // bind pub to claimed mailbox; else no challenge
+
+      const nonce = new Uint8Array(16); crypto.getRandomValues(nonce);
+      // persist nonce + identity pub on the attachment (survives hibernation), keep other fields
+      ws.serializeAttachment({ ...a, authNonce: b64encode(nonce), authIdentityPub: signal.identityPub } as WsAttach);
+
+      const kp = await getServerKeyPair(this.state.storage);
+      const serverPub = await serverPublicRaw(kp);
+      ws.send(JSON.stringify({ type: 'auth_challenge', serverPub: b64encode(serverPub), nonce: b64encode(nonce) }));
+      return;
+    }
+
+    if (signal.type === 'auth_response') {
+      const a = this.attach(ws);
+      if (!a || !a.authNonce || !a.authIdentityPub) return;
+      const identityPubRaw = b64decode(a.authIdentityPub);
+      const fpBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', identityPubRaw));
+      if (toHex(fpBytes) !== a.fingerprint) return;
+      const nonce = b64decode(a.authNonce);
+      const kp = await getServerKeyPair(this.state.storage);
+      const ok = await verifyProof(kp.privateKey, identityPubRaw, nonce, fpBytes, signal.mac);
+      if (!ok) return;
+      const secret = await getAuthSecret(this.state.storage);
+      const { token, expiresAt } = await mintToken(secret, fpBytes, Date.now());
+      ws.send(JSON.stringify({ type: 'auth_token', token, expiresAt }));
       return;
     }
   }
