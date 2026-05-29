@@ -2,7 +2,7 @@ package com.voicedrop.network
 
 import android.util.Base64
 import android.util.Log
-import com.voicedrop.crypto.KeyManager
+import com.voicedrop.crypto.IdentityKeys
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -54,7 +54,7 @@ sealed class Signal {
 class SignalingClient(
     private val workerUrl: String,
     private val ownFingerprint: String,
-    private val keyManager: KeyManager,
+    private val keyManager: IdentityKeys,
 ) {
 
     @Volatile var authToken: String? = null

@@ -21,7 +21,7 @@ class WrapHmacMismatch(message: String = "wrap-binding HMAC mismatch") : Securit
 /** 2^30 wrap budget reached on voicedrop_wrap_v2 (DR2 §9.5). Re-pair to regenerate the KeyStore key. */
 class WrapBudgetExhausted(message: String = "AES-GCM wrap budget exhausted; re-pair required") : SecurityException(message)
 
-class KeyManager(context: Context) : WrapMac {
+class KeyManager(context: Context) : WrapMac, IdentityKeys {
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences("voicedrop_keys", Context.MODE_PRIVATE)
@@ -210,9 +210,9 @@ class KeyManager(context: Context) : WrapMac {
         return cipher.doFinal(ctAndTag)
     }
 
-    fun getPublicKeyBytes(): ByteArray = publicKeyBytes.copyOf()
+    override fun getPublicKeyBytes(): ByteArray = publicKeyBytes.copyOf()
 
-    fun getPrivateKeyBytes(): ByteArray = privateKeyBytes.copyOf()
+    override fun getPrivateKeyBytes(): ByteArray = privateKeyBytes.copyOf()
 
     fun getFingerprint(): String {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -220,7 +220,7 @@ class KeyManager(context: Context) : WrapMac {
         return hash.joinToString("") { "%02x".format(it) }
     }
 
-    fun getPublicKeyBase64(): String =
+    override fun getPublicKeyBase64(): String =
         android.util.Base64.encodeToString(publicKeyBytes, android.util.Base64.NO_WRAP)
 
     companion object {
