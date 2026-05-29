@@ -1,9 +1,12 @@
 package com.voicedrop.network
 
+import com.google.crypto.tink.subtle.X25519
+import com.voicedrop.crypto.IdentityKeys
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
@@ -15,6 +18,7 @@ import okhttp3.WebSocketListener
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -27,6 +31,20 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
+/**
+ * Tink-backed [IdentityKeys] for tests: a real X25519 keypair so the DH proof
+ * verifies, with no AndroidKeyStore (which KeyManager's init needs but Robolectric lacks).
+ * Honors the frozen byte contract: getPublicKeyBase64() == NO_WRAP(getPublicKeyBytes()).
+ */
+private class FakeIdentityKeys : IdentityKeys {
+    private val priv = X25519.generatePrivateKey()
+    private val pub = X25519.publicFromPrivate(priv)
+    override fun getPublicKeyBytes(): ByteArray = pub.copyOf()
+    override fun getPrivateKeyBytes(): ByteArray = priv.copyOf()
+    override fun getPublicKeyBase64(): String =
+        android.util.Base64.encodeToString(pub, android.util.Base64.NO_WRAP)
+}
+
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
 class SignalingClientTest {
@@ -35,12 +53,19 @@ class SignalingClientTest {
     private val serverReceived = LinkedBlockingQueue<String>()
     private val serverSocket = AtomicReference<WebSocket?>(null)
     private lateinit var client: SignalingClient
-    private val ownFingerprint = "FP-OWN"
+    private lateinit var identityKeys: FakeIdentityKeys
+    private lateinit var ownFingerprint: String
     private val stunAddr = "192.0.2.10:9000"
-    private val json = Json { ignoreUnknownKeys = true }
+    // encodeDefaults so server→client `encodeToString` emits the defaulted `type` field
+    // (production worker sends it; client's parseSignal dispatches on it). Mirrors
+    // SignalingClient's own json. Other tests only decode with this json, so this is safe.
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     @Before
     fun setUp() {
+        identityKeys = FakeIdentityKeys()
+        ownFingerprint = PullAuth.fingerprintBytes(identityKeys.getPublicKeyBytes())
+            .joinToString("") { "%02x".format(it) }
         server = MockWebServer()
         val listener = object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
@@ -62,7 +87,7 @@ class SignalingClientTest {
         server.start()
 
         val url = "ws://${server.hostName}:${server.port}"
-        client = SignalingClient(url, ownFingerprint)
+        client = SignalingClient(url, ownFingerprint, identityKeys)
         assertTrue(client.connect("room-1", stunAddr))
     }
 
@@ -80,6 +105,12 @@ class SignalingClientTest {
         return msg!!
     }
 
+    /** Drain the two messages the client auto-sends on open: hello, then auth_request. */
+    private fun drainHandshakeFromClient() {
+        nextServerMessage() // hello
+        nextServerMessage() // auth_request
+    }
+
     @Test
     fun connect_sendsHelloOnOpen() {
         val obj = json.parseToJsonElement(nextServerMessage()).jsonObject
@@ -90,8 +121,8 @@ class SignalingClientTest {
 
     @Test
     fun send_serializesAllSignalSubclassesWithTypeField() {
-        // Drain the auto-hello first; also confirms the WebSocket is open before further sends.
-        nextServerMessage()
+        // Drain hello + auth_request first; also confirms the WebSocket is open before further sends.
+        drainHandshakeFromClient()
 
         val outbound = listOf(
             Signal.Hello(fingerprint = "FP-A", stunAddr = "1.1.1.1:1"),
@@ -150,8 +181,8 @@ class SignalingClientTest {
 
     @Test
     fun roundTrip_clientSerializedSignalsParseBackToOriginals() = runBlocking {
-        // Drain auto-hello so subsequent server-received items are exactly what client.send produced.
-        nextServerMessage()
+        // Drain hello + auth_request so subsequent server-received items are exactly what client.send produced.
+        drainHandshakeFromClient()
         val ws = serverSocket.get()!!
 
         // Excludes Signal.Hello: parseSignal() drops "hello" (client-only outbound type).
@@ -171,5 +202,53 @@ class SignalingClientTest {
             client.signals.take(originals.size).toList()
         }
         assertEquals(originals, received)
+    }
+
+    @Test
+    fun handshake_yields_token() = runBlocking {
+        // 1. Drain hello; capture the auth_request to read the client's identityPub.
+        nextServerMessage() // hello
+        val authReq = json.parseToJsonElement(nextServerMessage()).jsonObject
+        assertEquals("auth_request", authReq["type"]?.jsonPrimitive?.content)
+        val clientPub = android.util.Base64.decode(
+            authReq["identityPub"]!!.jsonPrimitive.content, android.util.Base64.NO_WRAP
+        )
+
+        // 2. Server generates its own X25519 keypair + nonce; sends auth_challenge.
+        val serverPriv = X25519.generatePrivateKey()
+        val serverPub = X25519.publicFromPrivate(serverPriv)
+        val nonce = ByteArray(16) { it.toByte() }
+        val ws = serverSocket.get()!!
+        ws.send(
+            json.encodeToString(
+                Signal.AuthChallenge(
+                    serverPub = android.util.Base64.encodeToString(serverPub, android.util.Base64.NO_WRAP),
+                    nonce = android.util.Base64.encodeToString(nonce, android.util.Base64.NO_WRAP)
+                )
+            )
+        )
+
+        // 3. Client replies auth_response{mac}; server VERIFIES the proof (DH symmetry).
+        val authResp = json.parseToJsonElement(nextServerMessage()).jsonObject
+        assertEquals("auth_response", authResp["type"]?.jsonPrimitive?.content)
+        val gotMac = android.util.Base64.decode(
+            authResp["mac"]!!.jsonPrimitive.content, android.util.Base64.NO_WRAP
+        )
+        val fp = PullAuth.fingerprintBytes(clientPub)
+        val expectedMac = PullAuth.macWithKey(X25519.computeSharedSecret(serverPriv, clientPub), nonce, fp)
+        assertArrayEquals("client proof MAC must verify server-side", expectedMac, gotMac)
+
+        // 4. Server issues a token; client must store it.
+        ws.send(
+            json.encodeToString(
+                Signal.AuthToken(token = "test-token", expiresAt = 9_999_999_999_999L)
+            )
+        )
+
+        // 5. Poll until the client stores it (onMessage runs on the WS callback thread).
+        withTimeout(5_000L) {
+            while (client.authToken == null) kotlinx.coroutines.delay(20)
+        }
+        assertEquals("test-token", client.authToken)
     }
 }
