@@ -1,5 +1,6 @@
 package com.voicedrop.storage
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -38,7 +39,20 @@ data class MessageEntity(
     // v1.4.0.3. Compact byte encoding: one unsigned byte per time-bucket spanning
     // the recording, each byte = (|sample| / 32768) * 255 clamped 0..255. Produced
     // by audio/PeakAccumulator (added in Phase B).
-    val waveformPeaks: ByteArray? = null
+    val waveformPeaks: ByteArray? = null,
+    /**
+     * Finding #2 / resend cap: count of RECEIPT *re-emits* for this inbound
+     * message after the original (incremented only on the duplicate-DATA
+     * recovery path). Bounds the patient-replay Ns drip — see
+     * RatchetDecryptAndPersist.handleDuplicate. 0 for outbound rows.
+     *
+     * `@ColumnInfo(defaultValue = "0")` gives the column a SQL-level default so
+     * the generated `CREATE TABLE` matches Migration_6_7's `DEFAULT 0` AND so the
+     * raw `ContentValues` message insert in RatchetEncryptAndSend (which does not
+     * enumerate this column) satisfies the NOT NULL constraint on fresh DBs.
+     */
+    @ColumnInfo(defaultValue = "0")
+    val receipt_resends: Int = 0
 ) {
     // Equality by uuid only — ByteArray's reference-equality from the generated
     // data-class equals would break DiffUtil and any dedup helpers as soon as
