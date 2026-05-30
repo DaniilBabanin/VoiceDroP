@@ -25,7 +25,10 @@ import androidx.room.PrimaryKey
         childColumns = ["contact_id"],
         onDelete = ForeignKey.CASCADE
     )],
-    indices = [Index(value = ["contact_id", "created_at"])]
+    indices = [
+        Index(value = ["contact_id", "created_at"]),
+        Index(value = ["contact_id", "acked_uuid"])
+    ]
 )
 data class PendingOutboundFrameEntity(
     @PrimaryKey val uuid: ByteArray,
@@ -34,7 +37,14 @@ data class PendingOutboundFrameEntity(
     val wrapped_frame: ByteArray,
     val frame_hmac: ByteArray,
     val created_at: Long,
-    val attempts: Int = 0
+    val attempts: Int = 0,
+    /**
+     * Finding #2 / B1: for RECEIPT rows (frame_kind = FRAME_KIND_RECEIPT), the
+     * 16-byte UUID of the inbound DATA frame this RECEIPT acknowledges. Null for
+     * DATA / RESET rows. Lets the decrypt path query "is a RECEIPT for X already
+     * pending?" without unwrapping the encrypted frame body.
+     */
+    val acked_uuid: ByteArray? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

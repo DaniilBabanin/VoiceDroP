@@ -58,4 +58,27 @@ interface PendingOutboundFrameDao {
 
     @Query("SELECT COUNT(*) FROM pending_outbound_frames WHERE contact_id = :contactId")
     suspend fun countForContact(contactId: String): Int
+
+    /**
+     * B1 idempotency: true iff a RECEIPT row acking [ackedUuid] is already queued
+     * for [contactId]. Blocking — runs inside the decrypt-path transaction.
+     */
+    @Query(
+        "SELECT EXISTS(SELECT 1 FROM pending_outbound_frames " +
+            "WHERE contact_id = :contactId " +
+            "AND frame_kind = ${PendingOutboundFrameEntity.FRAME_KIND_RECEIPT} " +
+            "AND acked_uuid = :ackedUuid)"
+    )
+    fun existsPendingReceiptForAckedBlocking(contactId: String, ackedUuid: ByteArray): Boolean
+
+    /**
+     * B2 backstop: number of pending RECEIPT rows for [contactId]. Blocking —
+     * runs inside the decrypt-path transaction.
+     */
+    @Query(
+        "SELECT COUNT(*) FROM pending_outbound_frames " +
+            "WHERE contact_id = :contactId " +
+            "AND frame_kind = ${PendingOutboundFrameEntity.FRAME_KIND_RECEIPT}"
+    )
+    fun countPendingReceiptsForContactBlocking(contactId: String): Int
 }

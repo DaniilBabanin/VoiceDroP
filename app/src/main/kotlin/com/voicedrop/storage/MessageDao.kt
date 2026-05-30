@@ -112,4 +112,17 @@ interface MessageDao {
      */
     @Query("UPDATE messages SET waveformPeaks = :peaks WHERE uuid = :uuid AND waveformPeaks IS NULL")
     suspend fun updateWaveformPeaks(uuid: String, peaks: ByteArray): Int
+
+    /**
+     * Finding #2 resend cap — read the per-message re-emit count (blocking, in-txn).
+     * Returns null only when no `messages` row with [uuid] exists; the column itself
+     * is NOT NULL DEFAULT 0. Callers on the dedup path treat the message as having
+     * zero re-emits when absent (`?: 0`).
+     */
+    @Query("SELECT receipt_resends FROM messages WHERE uuid = :uuid")
+    fun getReceiptResendsBlocking(uuid: String): Int?
+
+    /** Finding #2 resend cap — increment the per-message re-emit count; returns rows updated. */
+    @Query("UPDATE messages SET receipt_resends = receipt_resends + 1 WHERE uuid = :uuid")
+    fun incrementReceiptResendsBlocking(uuid: String): Int
 }

@@ -8,14 +8,17 @@ import androidx.room.TypeConverter
 import androidx.room.TypeConverters
 
 /**
- * Schema v6 — v5 → v6 — §D: adds cached `waveformPeaks` blob to messages for the
- * playback waveform bar (lazily backfilled on first playback; see Migration_5_6).
+ * Schema v7 — v6 → v7 — Finding #2 / Phase B: adds `pending_outbound_frames.acked_uuid`
+ * (nullable BLOB) + a `(contact_id, acked_uuid)` index, and `messages.receipt_resends`
+ * (INT NOT NULL DEFAULT 0). Backs idempotent duplicate-DATA RECEIPT handling and the
+ * per-message resend cap (see Migration_6_7).
  *
  * v1.x → v3 was a hard cutover (destructive). v3 → v4 is the FIRST real migration
  * — adds `verified_at` and `verified_fp_pair_hash` columns to `contacts`. v4 → v5
  * adds the `prekey_epochs` table and wipes ratchet state on all existing contacts
  * (see Migration_4_5). v5 → v6 adds the `waveformPeaks` BLOB column on `messages`
- * (see Migration_5_6). The fallback policy is `fallbackToDestructiveMigrationOnDowngrade`
+ * (see Migration_5_6). v6 → v7 adds `acked_uuid` + `receipt_resends` (see Migration_6_7).
+ * The fallback policy is `fallbackToDestructiveMigrationOnDowngrade`
  * so upgrades require a real `Migration` while downgrades (sideloading an older APK)
  * still wipe cleanly. The "Pair again" UX is wired up via [RepairNamesStash], which
  * copies contact display names out of the old DB file *before* Room takes ownership.
@@ -29,7 +32,7 @@ import androidx.room.TypeConverters
         PendingOutboundFrameEntity::class,
         PrekeyEpochEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = true
 )
 @TypeConverters(AppDatabase.Converters::class)
@@ -70,7 +73,7 @@ abstract class AppDatabase : RoomDatabase() {
                         AppDatabase::class.java,
                         "voicedrop.db"
                     )
-                        .addMigrations(Migration_3_4, Migration_4_5, Migration_5_6)
+                        .addMigrations(Migration_3_4, Migration_4_5, Migration_5_6, Migration_6_7)
                         .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                         .build()
                         .also {

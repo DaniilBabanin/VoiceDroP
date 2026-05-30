@@ -38,7 +38,14 @@ data class MessageEntity(
     // v1.4.0.3. Compact byte encoding: one unsigned byte per time-bucket spanning
     // the recording, each byte = (|sample| / 32768) * 255 clamped 0..255. Produced
     // by audio/PeakAccumulator (added in Phase B).
-    val waveformPeaks: ByteArray? = null
+    val waveformPeaks: ByteArray? = null,
+    /**
+     * Finding #2 / resend cap: count of RECEIPT *re-emits* for this inbound
+     * message after the original (incremented only on the duplicate-DATA
+     * recovery path). Bounds the patient-replay Ns drip — see
+     * RatchetDecryptAndPersist.handleDuplicate. 0 for outbound rows.
+     */
+    val receipt_resends: Int = 0
 ) {
     // Equality by uuid only — ByteArray's reference-equality from the generated
     // data-class equals would break DiffUtil and any dedup helpers as soon as
