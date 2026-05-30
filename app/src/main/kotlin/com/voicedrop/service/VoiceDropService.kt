@@ -299,18 +299,14 @@ class VoiceDropService : Service() {
                 recordStartElapsedRealtime,
                 recordStartTime,
             )
-            VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
-            AllWidgetProvider.refreshAll(this@VoiceDropService)
+            refreshAllWidgets()
 
             try {
                 audioRecorder.start()
                 recordingJob = scope.async { audioRecorder.recordLoop { } }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start recording", e)
-                startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
-                ServiceState.updateState(ServiceState.State.IDLE, emptyList())
-                VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
-                AllWidgetProvider.refreshAll(this@VoiceDropService)
+                returnToIdle()
             }
         }
     }
@@ -322,8 +318,7 @@ class VoiceDropService : Service() {
 
             vibrateSingle()
             ServiceState.updateState(ServiceState.State.SENDING, contactIds)
-            VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
-            AllWidgetProvider.refreshAll(this@VoiceDropService)
+            refreshAllWidgets()
             notificationHelper.updateRecordingNotification(NOTIFICATION_ID_RECORDING, "Sending…")
 
             try {
@@ -386,10 +381,7 @@ class VoiceDropService : Service() {
                 Log.e(TAG, "Failed to send message", e)
             } finally {
                 releaseWakeLock()
-                startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
-                ServiceState.updateState(ServiceState.State.IDLE, emptyList())
-                VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
-                AllWidgetProvider.refreshAll(this@VoiceDropService)
+                returnToIdle()
             }
         }
     }
@@ -417,10 +409,7 @@ class VoiceDropService : Service() {
             } catch (e: Exception) {
                 Log.w(TAG, "cancelRecording: recorder teardown failed (ignored)", e)
             } finally {
-                startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
-                ServiceState.updateState(ServiceState.State.IDLE, emptyList())
-                VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
-                AllWidgetProvider.refreshAll(this@VoiceDropService)
+                returnToIdle()
                 Log.i(TAG, "recording cancelled for ${contactIds.size} recipient(s); buffer discarded")
             }
         }
@@ -481,9 +470,7 @@ class VoiceDropService : Service() {
             } finally {
                 notificationHelper.cancelNotification(notifId)
                 if (ServiceState.playingUuid.value == uuid) {
-                    ServiceState.setPlayingUuid(null)
-                    ServiceState.resetPlayingProgress()
-                    ServiceState.setPlayingSpeed(1f)
+                    clearPlayingState()
                 }
                 playbackHandle = null
             }
@@ -493,6 +480,28 @@ class VoiceDropService : Service() {
     private fun stopPlay() {
         playbackHandle?.let { handle -> scope.launch { handle.stop() } }
         playbackHandle = null
+        clearPlayingState()
+    }
+
+    /** Refresh both home-screen widget flavors (single-contact + the "All" widget). */
+    private fun refreshAllWidgets() {
+        VoiceDropWidgetProvider.refreshAll(this@VoiceDropService)
+        AllWidgetProvider.refreshAll(this@VoiceDropService)
+    }
+
+    /**
+     * Restore the idle foreground notification, return [ServiceState] to IDLE,
+     * and refresh widgets — the shared "done, go quiet" tail used by the
+     * record-start error path and the send / cancel `finally` blocks.
+     */
+    private fun returnToIdle() {
+        startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
+        ServiceState.updateState(ServiceState.State.IDLE, emptyList())
+        refreshAllWidgets()
+    }
+
+    /** Reset playback observables to "nothing playing": uuid cleared, progress 0, 1× speed. */
+    private fun clearPlayingState() {
         ServiceState.setPlayingUuid(null)
         ServiceState.resetPlayingProgress()
         ServiceState.setPlayingSpeed(1f)

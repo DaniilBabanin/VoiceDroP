@@ -1,6 +1,7 @@
 package com.voicedrop.network
 
 import android.util.Log
+import com.voicedrop.util.bytesToHex
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.jvm.Volatile
 import kotlin.math.min
@@ -71,7 +72,7 @@ class IngestRateLimiter(
      */
     fun tryAdmit(senderFp: ByteArray): Boolean {
         require(senderFp.size == 32) { "senderFp must be 32 bytes" }
-        val key = senderFp.toHexLower()
+        val key = bytesToHex(senderFp)
         val now = clockMs()
         var bucket = buckets[key]
         if (bucket == null) {
@@ -157,17 +158,7 @@ class IngestRateLimiter(
     internal fun bucketCount(): Int = buckets.size
 
     /** Test hook: whether a bucket exists for this sender. */
-    internal fun hasBucket(senderFp: ByteArray): Boolean = buckets.containsKey(senderFp.toHexLower())
-
-    private fun ByteArray.toHexLower(): String {
-        val sb = StringBuilder(size * 2)
-        for (b in this) {
-            val v = b.toInt() and 0xff
-            sb.append(HEX_DIGITS[v ushr 4])
-            sb.append(HEX_DIGITS[v and 0x0f])
-        }
-        return sb.toString()
-    }
+    internal fun hasBucket(senderFp: ByteArray): Boolean = buckets.containsKey(bytesToHex(senderFp))
 
     companion object {
         const val INGEST_RATE_SUSTAINED: Int = 20
@@ -176,7 +167,6 @@ class IngestRateLimiter(
         const val DROP_AGGREGATION_WINDOW_MS: Long = 30_000L
 
         private const val TAG = "VoiceDrop/IngestRL"
-        private val HEX_DIGITS = "0123456789abcdef".toCharArray()
 
         private fun logDrops(senderFp: String, count: Long) {
             Log.w(TAG, "ingest.rate_limited senderFp=${senderFp.take(8)} count=$count")

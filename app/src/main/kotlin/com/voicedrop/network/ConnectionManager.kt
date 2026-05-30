@@ -24,6 +24,7 @@ import com.voicedrop.storage.ContactEntity
 import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.MessageRepository
 import com.voicedrop.storage.TransportType
+import com.voicedrop.util.bytesToHex
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -307,9 +308,7 @@ class ConnectionManager(
         }
 
         val conn = PeerConnection(socket)
-        connections[contactId] = conn
-        connectionTransports[contactId] = TransportType.P2P
-        scope.launch { receiveLoop(contactId, conn) }
+        registerConnection(contactId, conn, TransportType.P2P)
         conn.send(frame)
         Log.i(TAG, "path3 fp=$fp: sent ${frame.size} bytes via signaling/WAN path")
         return true
@@ -331,9 +330,7 @@ class ConnectionManager(
                 return false
             }
             val conn = PeerConnection(socket)
-            connections[contactId] = conn
-            connectionTransports[contactId] = transport
-            scope.launch { receiveLoop(contactId, conn) }
+            registerConnection(contactId, conn, transport)
             conn.send(frame)
             Log.i(TAG, "connectAndSend fp=$fp: sent ${frame.size} bytes")
             true
@@ -373,6 +370,17 @@ class ConnectionManager(
                 Log.w(TAG, "backoff fp=$fp: max attempts reached (give-up caps still apply per row)")
             }
         }
+    }
+
+    /**
+     * Register a freshly-established connection: store it, tag its transport,
+     * and start its receive loop. Shared by the P2P/hole-punch and
+     * direct-connect paths.
+     */
+    private fun registerConnection(contactId: String, conn: PeerConnection, transport: TransportType) {
+        connections[contactId] = conn
+        connectionTransports[contactId] = transport
+        scope.launch { receiveLoop(contactId, conn) }
     }
 
     private suspend fun receiveLoop(contactId: String, conn: PeerConnection) {
@@ -839,17 +847,6 @@ class ConnectionManager(
         private const val VERBOSE = true
         private const val BACKOFF_MAX_ATTEMPTS = 20
         private val DEFAULT_BACKOFF_MS = listOf(5_000L, 10_000L, 20_000L, 40_000L, 60_000L)
-
-        private val HEX_DIGITS = "0123456789abcdef".toCharArray()
-
-        private fun bytesToHex(b: ByteArray): String {
-            val sb = StringBuilder(b.size * 2)
-            for (x in b) {
-                val v = x.toInt() and 0xff
-                sb.append(HEX_DIGITS[v ushr 4]); sb.append(HEX_DIGITS[v and 0x0f])
-            }
-            return sb.toString()
-        }
 
         /** 16-byte UUID bytes → standard dashed UUID string (matches `UUID.toString()`). */
         private fun uuidBytesToUuidString(bytes: ByteArray): String {

@@ -2,6 +2,7 @@ package com.voicedrop.crypto
 
 import android.util.Log
 import com.voicedrop.storage.AppDatabase
+import com.voicedrop.util.bytesToHex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -81,17 +82,6 @@ class ReceiptInboundHandler(
 
         private fun defaultLog(line: String) {
             Log.i(TAG, line)
-        }
-
-        private val HEX = charArrayOf('0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f')
-
-        private fun bytesToHex(b: ByteArray): String {
-            val sb = StringBuilder(b.size * 2)
-            for (x in b) {
-                val v = x.toInt() and 0xff
-                sb.append(HEX[v ushr 4]); sb.append(HEX[v and 0x0f])
-            }
-            return sb.toString()
         }
     }
 }

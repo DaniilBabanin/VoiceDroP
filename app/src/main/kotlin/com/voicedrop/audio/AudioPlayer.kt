@@ -205,12 +205,6 @@ class AudioPlayer {
         }
     }
 
-    private fun shortsToBytes(shorts: ShortArray): ByteArray {
-        val buf = ByteBuffer.allocate(shorts.size * 2).order(ByteOrder.LITTLE_ENDIAN)
-        for (s in shorts) buf.putShort(s)
-        return buf.array()
-    }
-
     private companion object {
         private const val TAG = "AudioPlayer"
     }

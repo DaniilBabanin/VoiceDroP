@@ -58,7 +58,4 @@ interface SkippedMessageKeyDao {
 
     @Query("SELECT COUNT(*) FROM skipped_message_keys WHERE contact_id = :contactId")
     suspend fun countForContact(contactId: String): Int
-
-    @Query("SELECT COUNT(*) FROM skipped_message_keys")
-    suspend fun countAll(): Int
 }

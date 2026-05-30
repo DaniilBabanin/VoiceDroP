@@ -19,11 +19,23 @@ android {
         versionName = "1.4.2.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Distribution is GitHub Releases → Obtainium (no Play Store), so a single
+        // universal APK is sideloaded directly. Real targets are ARM phones/tablets;
+        // x86/x86_64 only cover emulators and rare Intel Chromebooks. Dropping them
+        // removes ~3 unused copies of the native Opus/Tink .so libs from the APK.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = true
+            // Strip resources unreachable from kept code. Safe here: no dynamic
+            // Resources.getIdentifier() lookups exist, so nothing is referenced
+            // by name only at runtime.
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

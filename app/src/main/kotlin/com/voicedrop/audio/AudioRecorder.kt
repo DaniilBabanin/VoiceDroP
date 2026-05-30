@@ -86,12 +86,6 @@ class AudioRecorder {
         RecordResult(opus = output.toByteArray(), peaks = peakAccumulator.build())
     }
 
-    private fun shortsToBytes(shorts: ShortArray, count: Int): ByteArray {
-        val buf = ByteBuffer.allocate(count * 2).order(ByteOrder.LITTLE_ENDIAN)
-        for (i in 0 until count) buf.putShort(shorts[i])
-        return buf.array()
-    }
-
     private fun Int.toLittleEndianBytes(): ByteArray =
         ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(this).array()
 }
