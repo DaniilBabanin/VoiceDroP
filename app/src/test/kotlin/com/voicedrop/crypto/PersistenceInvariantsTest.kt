@@ -378,6 +378,55 @@ class PersistenceInvariantsTest {
     }
 
     /**
+     * Finding #2 / B2 — when a contact is already at the RECEIPT cap, a fresh DATA
+     * delivery still persists the message and advances the receive chain, but does
+     * NOT enqueue a RECEIPT (no Ns burn). DATA rows are never touched.
+     */
+    @Test
+    fun decrypt_freshDelivery_atReceiptCap_refusesReceipt_keepsMessage() = runBlocking {
+        val pair = bootstrapPair()
+        seedAliceContact(pair)
+        seedBobContact(pair)
+
+        // Saturate Bob's outbox with cap-many RECEIPT rows for this contact.
+        val cap = com.voicedrop.storage.OutboxMaintenance.OUTBOX_RECEIPT_CAP_PER_CONTACT
+        for (i in 0 until cap) {
+            bobDb.pendingOutboundFrameDao().insertBlocking(
+                com.voicedrop.storage.PendingOutboundFrameEntity(
+                    uuid = ByteArray(16).also { it[0] = (i and 0xff).toByte(); it[1] = ((i shr 8) and 0xff).toByte() },
+                    contact_id = pair.bobContactId,
+                    frame_kind = com.voicedrop.storage.PendingOutboundFrameEntity.FRAME_KIND_RECEIPT,
+                    wrapped_frame = ByteArray(8),
+                    frame_hmac = ByteArray(8),
+                    created_at = i.toLong(),
+                    acked_uuid = ByteArray(16).also { it[0] = (i and 0xff).toByte(); it[1] = ((i shr 8) and 0xff).toByte() }
+                )
+            )
+        }
+
+        val aliceTransmitted = mutableListOf<ByteArray>()
+        val aliceSender = sender(pair, transmit = { _, b -> aliceTransmitted += b })
+        aliceSender.encryptAndSend(pair.aliceContactId, "over-cap".toByteArray()) { hex, _, now ->
+            outboundMessage(hex, pair.aliceContactId, now)
+        }
+        val decoded = (FrameCodec.decode(aliceTransmitted.single()) as FrameCodec.DecodeResult.Ok).frame
+
+        val nsBefore = bobDb.contactDao().getById(pair.bobContactId)!!.ns
+        val receiver = receiver(pair)
+        val res = receiver.receive(pair.bobContactId, decoded) { plaintext, hex, _, ts ->
+            inboundMessage(hex, pair.bobContactId, plaintext, ts)
+        }
+
+        assertTrue("message still delivered", res is RatchetDecryptAndPersist.Result.Delivered)
+        val after = bobDb.contactDao().getById(pair.bobContactId)!!
+        assertEquals("receive chain advanced", 1, after.nr)
+        assertEquals("no RECEIPT enqueued at cap → Ns not burned", nsBefore, after.ns)
+        assertEquals("message row persisted", 1, bobDb.messageDao().getByContactList(pair.bobContactId).size)
+        assertEquals("still exactly cap RECEIPT rows", cap,
+            bobDb.pendingOutboundFrameDao().countPendingReceiptsForContactBlocking(pair.bobContactId))
+    }
+
+    /**
      * §4.4 clone-then-commit. A frame with valid header but tampered ciphertext
      * MUST leave the persisted state byte-for-byte identical. The DR14
      * consecutive-failure heuristic counter ticks up via an UPDATE OUTSIDE the

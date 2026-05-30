@@ -170,10 +170,19 @@ class RatchetDecryptAndPersist(
                 val message = buildInboundMessage(plaintext, frameUuidHex, frame.uuid, frame.timestampMs)
                 if (message != null) insertInboundMessageBlocking(message)
 
-                // 4) Enqueue authenticated RECEIPT — advances Ns, writes outbox row.
-                val contactAfterReceipt =
-                    enqueueReceiptInsideTxn(state, frame.uuid, contactAfterRecv, peerFp, now)
-                upsertContactBlocking(contactAfterReceipt)
+                // B2 — enqueue the authenticated RECEIPT only if under the per-contact
+                // cap. Past the cap we still persist the message and the advanced
+                // receive state, but skip the RECEIPT (Ns not burned). DATA rows are
+                // never evicted, so no voice-message loss.
+                if (db.pendingOutboundFrameDao().countPendingReceiptsForContactBlocking(contact.id)
+                    < OutboxMaintenance.OUTBOX_RECEIPT_CAP_PER_CONTACT
+                ) {
+                    val contactAfterReceipt =
+                        enqueueReceiptInsideTxn(state, frame.uuid, contactAfterRecv, peerFp, now)
+                    upsertContactBlocking(contactAfterReceipt)
+                } else {
+                    upsertContactBlocking(contactAfterRecv)
+                }
 
                 enforceSkippedCap(contactId)
                 Result.Delivered(plaintext, frameUuidHex)
