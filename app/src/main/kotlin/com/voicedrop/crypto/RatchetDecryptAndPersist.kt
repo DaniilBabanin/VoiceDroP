@@ -4,6 +4,7 @@ import com.voicedrop.network.FrameCodec
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.ContactEntity
 import com.voicedrop.storage.MessageEntity
+import com.voicedrop.storage.OutboxMaintenance
 import com.voicedrop.storage.PendingOutboundFrameEntity
 import com.voicedrop.storage.SkippedKeyMaintenance
 import com.voicedrop.storage.SkippedMessageKeyEntity
@@ -196,13 +197,38 @@ class RatchetDecryptAndPersist(
     ): Result {
         return when (frame.kind) {
             FrameCodec.FRAME_KIND_DATA -> {
-                // §8.2: re-enqueue a fresh RECEIPT but do NOT re-advance the
-                // receiving chain. The sender's prior DATA already landed in
-                // our DB; this path repairs the "DATA delivered, RECEIPT lost"
-                // window. RECEIPT advances ONLY our sending chain.
+                val contactId = contact.id
+                val outboxDao = db.pendingOutboundFrameDao()
+
+                // B1 — a RECEIPT acking this DATA is still queued: a burst duplicate.
+                // Pure no-op; do not load ratchet state, advance Ns, or insert.
+                if (outboxDao.existsPendingReceiptForAckedBlocking(contactId, frame.uuid)) {
+                    return Result.DuplicateData(frameUuidHex)
+                }
+
+                // Resend cap — bound lifetime re-emits for this message (§2.4).
+                val resends = db.messageDao().getReceiptResendsBlocking(frameUuidHex) ?: 0
+                if (resends >= OutboxMaintenance.RECEIPT_RESEND_CAP) {
+                    return Result.DuplicateData(frameUuidHex)
+                }
+
+                // B2 backstop — refuse a new RECEIPT past the per-contact cap.
+                if (outboxDao.countPendingReceiptsForContactBlocking(contactId)
+                    >= OutboxMaintenance.OUTBOX_RECEIPT_CAP_PER_CONTACT
+                ) {
+                    return Result.DuplicateData(frameUuidHex)
+                }
+
+                // Genuine retransmit recovery: re-enqueue exactly one RECEIPT,
+                // advance Ns once, and record the re-emit. Repairs the "DATA
+                // delivered, RECEIPT lost" window without re-advancing Nr.
                 val state = RatchetStatePersistence.loadRatchetState(contact, wrapMac)
                 val updated = enqueueReceiptInsideTxn(state, frame.uuid, contact, peerFp, now)
                 upsertContactBlocking(updated)
+                // Always updates exactly one row within this transaction: the message
+                // row was confirmed present by the dedup check upstream and cannot be
+                // deleted mid-txn. The count is intentionally discarded.
+                db.messageDao().incrementReceiptResendsBlocking(frameUuidHex)
                 Result.DuplicateData(frameUuidHex)
             }
             FrameCodec.FRAME_KIND_RECEIPT -> Result.DuplicateReceipt

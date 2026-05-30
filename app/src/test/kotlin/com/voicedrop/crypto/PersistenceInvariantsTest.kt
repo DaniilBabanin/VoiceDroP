@@ -8,7 +8,6 @@ import com.voicedrop.network.FrameCodec
 import com.voicedrop.storage.AppDatabase
 import com.voicedrop.storage.ContactEntity
 import com.voicedrop.storage.MessageEntity
-import com.voicedrop.storage.PendingOutboundFrameEntity
 import com.voicedrop.storage.PrekeyEpochEntity
 import com.voicedrop.storage.TransportType
 import javax.crypto.Cipher
@@ -243,75 +242,139 @@ class PersistenceInvariantsTest {
     // ---------- DR8: decrypt path ----------
 
     /**
-     * §8.2 — re-delivered DATA is dedup'd against the messages table. The
-     * receiving chain MUST NOT re-advance, but a fresh RECEIPT MUST be enqueued
-     * (to recover from a lost prior RECEIPT). The sending chain (Ns) advances
-     * once per re-delivery because RECEIPT consumes a chain step.
+     * Finding #2 / B1 — a duplicate DATA frame arriving while our RECEIPT is
+     * STILL in the outbox is a pure no-op: the sending chain MUST NOT advance and
+     * no second RECEIPT row may appear. (Replaces the pre-fix test that asserted
+     * the now-fixed "ns advances per duplicate" behavior.)
      */
     @Test
-    fun decrypt_idempotentByUuid_butReReceiptEnqueued() = runBlocking {
+    fun decrypt_duplicateWhileReceiptPending_isNoOp() = runBlocking {
         val pair = bootstrapPair()
-        // Alice's side persists for her encrypt path.
         seedAliceContact(pair)
-        // Bob's side persists for the decrypt path. Bob is the receiver here.
         seedBobContact(pair)
 
-        // Alice encrypts one DATA frame.
         val aliceTransmitted = mutableListOf<ByteArray>()
         val aliceSender = sender(pair, transmit = { _, b -> aliceTransmitted += b })
         aliceSender.encryptAndSend(pair.aliceContactId, "hello-bob".toByteArray()) { hex, _, now ->
             outboundMessage(hex, pair.aliceContactId, now)
         }
-        val wireFromAlice = aliceTransmitted.single()
-        val decoded = (FrameCodec.decode(wireFromAlice) as FrameCodec.DecodeResult.Ok).frame
+        val decoded = (FrameCodec.decode(aliceTransmitted.single()) as FrameCodec.DecodeResult.Ok).frame
 
-        // First receive: ratchet advances; RECEIPT lands in outbox.
         val receiver = receiver(pair)
         val first = receiver.receive(pair.bobContactId, decoded) { plaintext, hex, _, ts ->
             inboundMessage(hex, pair.bobContactId, plaintext, ts)
         }
         assertTrue(first is RatchetDecryptAndPersist.Result.Delivered)
-        val bobAfterFirst = bobDb.contactDao().getById(pair.bobContactId)!!
-        assertEquals("nr advanced once", 1, bobAfterFirst.nr)
-        assertEquals("ns advanced once for the RECEIPT", 1, bobAfterFirst.ns)
+        val afterFirst = bobDb.contactDao().getById(pair.bobContactId)!!
+        assertEquals(1, afterFirst.nr)
+        assertEquals(1, afterFirst.ns)
         assertEquals(1, bobDb.pendingOutboundFrameDao().countForContact(pair.bobContactId))
-        assertEquals(1, bobDb.messageDao().getByContactList(pair.bobContactId).size)
 
-        // Second receive of the SAME wire frame: dedup branch.
+        // RECEIPT still pending (not drained). Replay the SAME frame twice.
+        repeat(2) {
+            val dup = receiver.receive(pair.bobContactId, decoded) { _, _, _, _ ->
+                fail("buildInboundMessage must not be called on dedup path")
+                throw IllegalStateException("unreachable")
+            }
+            assertTrue(dup is RatchetDecryptAndPersist.Result.DuplicateData)
+        }
+
+        val afterDup = bobDb.contactDao().getById(pair.bobContactId)!!
+        assertEquals("nr unchanged", afterFirst.nr, afterDup.nr)
+        assertEquals("ns MUST NOT advance while a RECEIPT is pending", 1, afterDup.ns)
+        assertEquals("no second RECEIPT row", 1, bobDb.pendingOutboundFrameDao().countForContact(pair.bobContactId))
+        assertEquals("still one message row", 1, bobDb.messageDao().getByContactList(pair.bobContactId).size)
+    }
+
+    /**
+     * Finding #2 / recovery — once our RECEIPT has DRAINED from the outbox (peer
+     * never got it), a re-delivered DATA legitimately re-enqueues exactly ONE
+     * RECEIPT and advances Ns exactly once. Preserves "RECEIPT lost, peer retried".
+     */
+    @Test
+    fun decrypt_duplicateAfterReceiptDrained_reEnqueuesOneReceipt_advancesNsOnce() = runBlocking {
+        val pair = bootstrapPair()
+        seedAliceContact(pair)
+        seedBobContact(pair)
+
+        val aliceTransmitted = mutableListOf<ByteArray>()
+        val aliceSender = sender(pair, transmit = { _, b -> aliceTransmitted += b })
+        aliceSender.encryptAndSend(pair.aliceContactId, "hello-bob".toByteArray()) { hex, _, now ->
+            outboundMessage(hex, pair.aliceContactId, now)
+        }
+        val decoded = (FrameCodec.decode(aliceTransmitted.single()) as FrameCodec.DecodeResult.Ok).frame
+
+        val receiver = receiver(pair)
+        receiver.receive(pair.bobContactId, decoded) { plaintext, hex, _, ts ->
+            inboundMessage(hex, pair.bobContactId, plaintext, ts)
+        }
+        // Simulate the replay worker transmitting + deleting the RECEIPT row.
+        val pending = bobDb.pendingOutboundFrameDao().getByContact(pair.bobContactId).single()
+        bobDb.pendingOutboundFrameDao().deleteByUuid(pending.uuid)
+        assertEquals(0, bobDb.pendingOutboundFrameDao().countForContact(pair.bobContactId))
+
         val dup = receiver.receive(pair.bobContactId, decoded) { _, _, _, _ ->
             fail("buildInboundMessage must not be called on dedup path")
             throw IllegalStateException("unreachable")
         }
         assertTrue(dup is RatchetDecryptAndPersist.Result.DuplicateData)
 
-        val bobAfterDup = bobDb.contactDao().getById(pair.bobContactId)!!
-        assertEquals("nr unchanged — receiving chain MUST NOT re-advance", bobAfterFirst.nr, bobAfterDup.nr)
-        assertEquals("ns DID advance once more (re-enqueued RECEIPT)", 2, bobAfterDup.ns)
-        assertEquals("a second RECEIPT row exists", 2, bobDb.pendingOutboundFrameDao().countForContact(pair.bobContactId))
-        assertEquals("messages table still has exactly one row", 1, bobDb.messageDao().getByContactList(pair.bobContactId).size)
+        val after = bobDb.contactDao().getById(pair.bobContactId)!!
+        assertEquals("ns advanced exactly once for the re-enqueued RECEIPT", 2, after.ns)
+        assertEquals("exactly one fresh RECEIPT row", 1, bobDb.pendingOutboundFrameDao().countForContact(pair.bobContactId))
+        // The re-enqueued RECEIPT acks the original DATA UUID.
+        val row = bobDb.pendingOutboundFrameDao().getByContact(pair.bobContactId).single()
+        assertArrayEquals(decoded.uuid, row.acked_uuid)
+    }
 
-        // Both RECEIPT outbox rows must ack the SAME DATA UUID, but be themselves
-        // distinct frames (distinct frame UUIDs, distinct ciphertexts).
-        val outboxRows = bobDb.pendingOutboundFrameDao().getByContact(pair.bobContactId)
-        assertEquals(2, outboxRows.size)
-        assertEquals(
-            "both RECEIPTs are RECEIPT frames",
-            setOf(PendingOutboundFrameEntity.FRAME_KIND_RECEIPT),
-            outboxRows.map { it.frame_kind }.toSet()
-        )
-        assertTrue(
-            "RECEIPT frame UUIDs distinct",
-            !outboxRows[0].uuid.contentEquals(outboxRows[1].uuid)
-        )
-        val chainPositions = outboxRows.map { row ->
-            val wire = wrapMac.unwrapAndVerify(
-                "pending_outbound_frames.wrapped_frame", row.uuid, row.wrapped_frame, row.frame_hmac
-            )
-            val d = (FrameCodec.decode(wire) as FrameCodec.DecodeResult.Ok).frame
-            assertEquals(FrameCodec.FRAME_KIND_RECEIPT, d.kind)
-            d.n
-        }.toSortedSet()
-        assertEquals("RECEIPT chain positions are 0 and 1 (no key reuse)", sortedSetOf(0, 1), chainPositions)
+    /**
+     * Finding #2 / resend cap — after RECEIPT_RESEND_CAP genuine re-sends (each
+     * following a drain), further re-deliveries are suppressed: no new RECEIPT,
+     * Ns frozen. Bounds the patient-replay Ns drip.
+     */
+    @Test
+    fun decrypt_resendCap_suppressesAfterK_andFreezesNs() = runBlocking {
+        val pair = bootstrapPair()
+        seedAliceContact(pair)
+        seedBobContact(pair)
+
+        val aliceTransmitted = mutableListOf<ByteArray>()
+        val aliceSender = sender(pair, transmit = { _, b -> aliceTransmitted += b })
+        aliceSender.encryptAndSend(pair.aliceContactId, "hello-bob".toByteArray()) { hex, _, now ->
+            outboundMessage(hex, pair.aliceContactId, now)
+        }
+        val decoded = (FrameCodec.decode(aliceTransmitted.single()) as FrameCodec.DecodeResult.Ok).frame
+        val dataUuidHex = decoded.uuid.joinToString("") { "%02x".format(it) }
+
+        val receiver = receiver(pair)
+        receiver.receive(pair.bobContactId, decoded) { plaintext, hex, _, ts ->
+            inboundMessage(hex, pair.bobContactId, plaintext, ts)
+        }
+
+        // K genuine re-sends: drain then replay, each time.
+        repeat(com.voicedrop.storage.OutboxMaintenance.RECEIPT_RESEND_CAP) {
+            val row = bobDb.pendingOutboundFrameDao().getByContact(pair.bobContactId).single()
+            bobDb.pendingOutboundFrameDao().deleteByUuid(row.uuid)
+            receiver.receive(pair.bobContactId, decoded) { _, _, _, _ ->
+                fail("dedup path must not build a message"); throw IllegalStateException()
+            }
+        }
+        val nsAtCap = bobDb.contactDao().getById(pair.bobContactId)!!.ns
+        assertEquals(com.voicedrop.storage.OutboxMaintenance.RECEIPT_RESEND_CAP,
+            bobDb.messageDao().getByUuid(dataUuidHex)!!.receipt_resends)
+
+        // One more drained replay — now over the cap, must be suppressed.
+        val row = bobDb.pendingOutboundFrameDao().getByContact(pair.bobContactId).single()
+        bobDb.pendingOutboundFrameDao().deleteByUuid(row.uuid)
+        val over = receiver.receive(pair.bobContactId, decoded) { _, _, _, _ ->
+            fail("dedup path must not build a message"); throw IllegalStateException()
+        }
+        assertTrue(over is RatchetDecryptAndPersist.Result.DuplicateData)
+        assertEquals("ns frozen at the cap", nsAtCap, bobDb.contactDao().getById(pair.bobContactId)!!.ns)
+        assertEquals("no new RECEIPT enqueued past the cap", 0,
+            bobDb.pendingOutboundFrameDao().countForContact(pair.bobContactId))
+        assertEquals("resend count frozen at K", com.voicedrop.storage.OutboxMaintenance.RECEIPT_RESEND_CAP,
+            bobDb.messageDao().getByUuid(dataUuidHex)!!.receipt_resends)
     }
 
     /**
