@@ -253,7 +253,7 @@ class ConnectionManager(
 
         val peerHello: Signal.PeerHello? = try {
             coroutineScope {
-                val sendClient = SignalingClient(workerUrl, ownFingerprint)
+                val sendClient = SignalingClient(workerUrl, ownFingerprint, keyManager)
                 val collector = async {
                     withTimeoutOrNull(15_000L) {
                         var found: Signal.PeerHello? = null
@@ -672,7 +672,7 @@ class ConnectionManager(
                             val addr = "${stunResult?.address?.hostAddress ?: "0.0.0.0"}:$listenPort"
                             Log.i(TAG, "presence: connecting fp=${contact.id.take(8)} addr=$addr")
 
-                            val client = SignalingClient(workerUrl, ownFingerprint)
+                            val client = SignalingClient(workerUrl, ownFingerprint, keyManager)
                             signalingClients[contact.id] = client
                             client.connect(roomKey, addr)
 
@@ -733,31 +733,49 @@ class ConnectionManager(
             return
         }
         if (workerUrl.isBlank()) return
-        try {
-            val url = derivePullUrl(roomKey)
-            val request = Request.Builder().url(url).get().build()
-            val responseBody = httpClient.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    Log.w(TAG, "presence: pull failed fp=$fp code=${resp.code}")
-                    return
-                }
-                resp.body?.string() ?: return
+        // The presence client for this contact ran the DH handshake on this room's DO;
+        // its token is what /pull on the same roomKey requires.
+        val client = signalingClients[contactId]
+        var token = client?.authToken ?: client?.ensureFreshToken() ?: run {
+            Log.w(TAG, "presence: pull fp=$fp — no auth token")
+            return
+        }
+        val responseBody = try {
+            var body = executePull(roomKey, token)
+            if (body == null && client != null) {
+                // 401 or transport hiccup → one re-auth + retry
+                token = client.ensureFreshToken() ?: return
+                body = executePull(roomKey, token)
             }
-            val obj = Json.parseToJsonElement(responseBody) as? JsonObject ?: return
-            val frames = obj["frames"]?.jsonArray ?: return
-            Log.i(TAG, "presence: pull fp=$fp — ${frames.size} frame(s)")
-            for (frameEl in frames) {
-                try {
-                    val base64 = frameEl.jsonPrimitive.content
-                    val bytes = android.util.Base64.decode(base64, android.util.Base64.NO_WRAP)
-                    Log.i(TAG, "presence: relay_frame fp=$fp size=${bytes.size}")
-                    processFrame(bytes, TransportType.RELAY)
-                } catch (e: Exception) {
-                    Log.w(TAG, "presence: relay_frame error fp=$fp — ${e.message}")
-                }
-            }
+            body ?: return
         } catch (e: Exception) {
             Log.w(TAG, "presence: pull error fp=$fp — ${e.message}")
+            return
+        }
+        val obj = Json.parseToJsonElement(responseBody) as? JsonObject ?: return
+        val frames = obj["frames"]?.jsonArray ?: return
+        Log.i(TAG, "presence: pull fp=$fp — ${frames.size} frame(s)")
+        for (frameEl in frames) {
+            try {
+                val base64 = frameEl.jsonPrimitive.content
+                val bytes = android.util.Base64.decode(base64, android.util.Base64.NO_WRAP)
+                processFrame(bytes, TransportType.RELAY)
+            } catch (e: Exception) {
+                Log.w(TAG, "presence: relay_frame error fp=$fp — ${e.message}")
+            }
+        }
+    }
+
+    /** Returns the response body, or null on 401 (caller may re-auth + retry) / non-success. */
+    private fun executePull(roomKey: String, token: String): String? {
+        val url = derivePullUrl(roomKey)
+        val request = Request.Builder().url(url).addHeader("Authorization", "Bearer $token").get().build()
+        return httpClient.newCall(request).execute().use { resp ->
+            when {
+                resp.isSuccessful -> resp.body?.string()
+                resp.code == 401 -> { Log.i(TAG, "presence: pull 401 — re-auth"); null }
+                else -> { Log.w(TAG, "presence: pull failed code=${resp.code}"); null }
+            }
         }
     }
 

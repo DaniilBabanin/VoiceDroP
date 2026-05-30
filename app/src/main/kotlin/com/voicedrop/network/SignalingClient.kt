@@ -1,6 +1,9 @@
 package com.voicedrop.network
 
+import android.util.Base64
 import android.util.Log
+import com.voicedrop.crypto.IdentityKeys
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
@@ -34,12 +37,29 @@ sealed class Signal {
 
     @Serializable
     data class RelayFrame(val type: String = "relay_frame", val data: String) : Signal()
+
+    @Serializable
+    data class AuthRequest(val type: String = "auth_request", val identityPub: String) : Signal()
+
+    @Serializable
+    data class AuthChallenge(val type: String = "auth_challenge", val serverPub: String, val nonce: String) : Signal()
+
+    @Serializable
+    data class AuthResponse(val type: String = "auth_response", val mac: String) : Signal()
+
+    @Serializable
+    data class AuthToken(val type: String = "auth_token", val token: String, val expiresAt: Long) : Signal()
 }
 
 class SignalingClient(
     private val workerUrl: String,
-    private val ownFingerprint: String
+    private val ownFingerprint: String,
+    private val keyManager: IdentityKeys,
 ) {
+
+    @Volatile var authToken: String? = null
+        private set
+    @Volatile private var tokenWaiter: CompletableDeferred<String?>? = null
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -77,11 +97,21 @@ class SignalingClient(
                 Log.i(TAG, "onOpen: room=$roomKey — sending hello")
                 val hello = """{"type":"hello","fingerprint":"$ownFingerprint","stunAddr":"$stunAddr"}"""
                 ws.send(hello)
+                val identityPub = keyManager.getPublicKeyBase64()
+                ws.send(json.encodeToString<Signal.AuthRequest>(Signal.AuthRequest(identityPub = identityPub)))
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
-                Log.d(TAG, "onMessage: $text")
-                parseSignal(text)?.let { signalChannel.trySend(it) }
+                val sig = parseSignal(text) ?: return
+                Log.d(TAG, "onMessage: ${sig.javaClass.simpleName}")
+                when (sig) {
+                    is Signal.AuthChallenge -> handleAuthChallenge(sig)
+                    is Signal.AuthToken -> {
+                        authToken = sig.token
+                        tokenWaiter?.complete(sig.token); tokenWaiter = null
+                    }
+                    else -> signalChannel.trySend(sig)
+                }
             }
 
             override fun onClosing(ws: WebSocket, code: Int, reason: String) {
@@ -109,6 +139,10 @@ class SignalingClient(
             is Signal.OutboxPing -> json.encodeToString<Signal.OutboxPing>(signal)
             is Signal.OutboxReady -> json.encodeToString<Signal.OutboxReady>(signal)
             is Signal.RelayFrame -> json.encodeToString<Signal.RelayFrame>(signal)
+            is Signal.AuthRequest -> json.encodeToString<Signal.AuthRequest>(signal)
+            is Signal.AuthChallenge -> json.encodeToString<Signal.AuthChallenge>(signal)
+            is Signal.AuthResponse -> json.encodeToString<Signal.AuthResponse>(signal)
+            is Signal.AuthToken -> json.encodeToString<Signal.AuthToken>(signal)
         }
         val sent = webSocket?.send(text)
         Log.d(TAG, "send: ${signal.javaClass.simpleName} sent=$sent")
@@ -121,6 +155,31 @@ class SignalingClient(
         signalChannel.close()  // terminate collect immediately; onClosed may arrive late
     }
 
+    private fun handleAuthChallenge(sig: Signal.AuthChallenge) {
+        try {
+            val serverPub = Base64.decode(sig.serverPub, Base64.NO_WRAP)
+            val nonce = Base64.decode(sig.nonce, Base64.NO_WRAP)
+            val priv = keyManager.getPrivateKeyBytes()
+            val fp = PullAuth.fingerprintBytes(keyManager.getPublicKeyBytes())
+            val mac = PullAuth.computeProofMac(priv, serverPub, nonce, fp)
+            send(Signal.AuthResponse(mac = Base64.encodeToString(mac, Base64.NO_WRAP)))
+        } catch (e: Exception) {
+            Log.w(TAG, "auth challenge handling failed: ${e.message}")
+        }
+    }
+
+    /** Force a fresh token: re-run the handshake and await the next auth_token (or null on timeout). */
+    suspend fun ensureFreshToken(timeoutMs: Long = 5_000): String? {
+        val waiter = CompletableDeferred<String?>()
+        tokenWaiter = waiter
+        send(Signal.AuthRequest(identityPub = keyManager.getPublicKeyBase64()))
+        return try {
+            kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { waiter.await() }
+        } finally {
+            if (tokenWaiter === waiter) tokenWaiter = null
+        }
+    }
+
     private fun parseSignal(text: String): Signal? {
         return try {
             val obj = json.parseToJsonElement(text) as? JsonObject ?: return null
@@ -130,6 +189,8 @@ class SignalingClient(
                 "outbox_ping" -> json.decodeFromString<Signal.OutboxPing>(text)
                 "outbox_ready" -> json.decodeFromString<Signal.OutboxReady>(text)
                 "relay_frame"  -> json.decodeFromString<Signal.RelayFrame>(text)
+                "auth_challenge" -> json.decodeFromString<Signal.AuthChallenge>(text)
+                "auth_token"   -> json.decodeFromString<Signal.AuthToken>(text)
                 else -> null
             }
         } catch (e: Exception) {
