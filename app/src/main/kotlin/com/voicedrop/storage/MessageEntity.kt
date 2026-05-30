@@ -1,5 +1,6 @@
 package com.voicedrop.storage
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -44,7 +45,13 @@ data class MessageEntity(
      * message after the original (incremented only on the duplicate-DATA
      * recovery path). Bounds the patient-replay Ns drip — see
      * RatchetDecryptAndPersist.handleDuplicate. 0 for outbound rows.
+     *
+     * `@ColumnInfo(defaultValue = "0")` gives the column a SQL-level default so
+     * the generated `CREATE TABLE` matches Migration_6_7's `DEFAULT 0` AND so the
+     * raw `ContentValues` message insert in RatchetEncryptAndSend (which does not
+     * enumerate this column) satisfies the NOT NULL constraint on fresh DBs.
      */
+    @ColumnInfo(defaultValue = "0")
     val receipt_resends: Int = 0
 ) {
     // Equality by uuid only — ByteArray's reference-equality from the generated
