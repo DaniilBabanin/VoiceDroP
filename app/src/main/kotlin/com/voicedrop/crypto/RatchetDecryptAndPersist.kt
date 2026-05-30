@@ -258,7 +258,8 @@ class RatchetDecryptAndPersist(
                 wrapped_frame = wrapped,
                 frame_hmac = hmac,
                 created_at = now,
-                attempts = 0
+                attempts = 0,
+                acked_uuid = ackedUuid
             )
         )
         return RatchetStatePersistence.saveRatchetState(contact, state, wrapMac)
