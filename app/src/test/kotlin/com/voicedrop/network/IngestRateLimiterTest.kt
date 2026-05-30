@@ -8,30 +8,31 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 /**
- * DR10 — IngestRateLimiter unit tests (§5 token bucket).
+ * DR10 — IngestRateLimiter unit tests (§5 token bucket) + Finding #3 hardening:
+ * key on senderFp alone and bound the bucket map.
  *
- * Plain JUnit — the limiter has no Android dependencies on the tested paths
- * (production logging uses [android.util.Log] but every test injects a custom
- * [onDropsAggregated] callback so Log is never touched).
+ * Plain JUnit — no Android dependency on the tested paths (production logging
+ * uses android.util.Log but every test injects a custom onDropsAggregated).
  */
 class IngestRateLimiterTest {
 
     private val senderFp = ByteArray(32) { 0x11 }
-    private val recipFp = ByteArray(32) { 0x22 }
+
+    private fun fpOf(k: Int): ByteArray = ByteArray(32).also {
+        it[0] = (k and 0xff).toByte()
+        it[1] = ((k ushr 8) and 0xff).toByte()
+    }
 
     @Test
     fun burstWithinCapacity_allFramesAdmitted() {
         val now = AtomicLong(0L)
         val rl = IngestRateLimiter(
             clockMs = { now.get() },
-            onDropsAggregated = { _, _, _ -> fail("no drops expected within burst capacity") }
+            onDropsAggregated = { _, _ -> fail("no drops expected within burst capacity") }
         )
-
-        // Spread 200 frames across ~50ms. Long ms cannot represent 0.25ms, so we
-        // step the clock by 1ms every 4 frames — final clock = 49ms.
         for (k in 0 until 200) {
             now.set(k / 4L)
-            assertTrue("frame $k must admit (within burst)", rl.tryAdmit(senderFp, recipFp))
+            assertTrue("frame $k must admit (within burst)", rl.tryAdmit(senderFp))
         }
     }
 
@@ -40,18 +41,13 @@ class IngestRateLimiterTest {
         val now = AtomicLong(0L)
         val rl = IngestRateLimiter(
             clockMs = { now.get() },
-            onDropsAggregated = { _, _, _ -> }
+            onDropsAggregated = { _, _ -> }
         )
-
-        // 200/s sustained for 10s = 2000 frames at 5ms intervals.
         var admits = 0
         for (k in 0 until 2000) {
             now.set(5L * k)
-            if (rl.tryAdmit(senderFp, recipFp)) admits++
+            if (rl.tryAdmit(senderFp)) admits++
         }
-        // Spec: first 200 (burst) + 20×10 (refill over 10s) = 400.
-        // Actual depends on which side of an integer boundary the bucket ends
-        // up on; allow a small window.
         val drops = 2000 - admits
         assertTrue("expected ~400 admits, got $admits", admits in 395..405)
         assertTrue("expected ~1600 drops, got $drops", drops in 1595..1605)
@@ -59,30 +55,20 @@ class IngestRateLimiterTest {
 
     @Test
     fun dropsAggregatedTo30sWindowEvent() {
-        val events = mutableListOf<Triple<String, String, Long>>()
+        val events = mutableListOf<Pair<String, Long>>()
         val now = AtomicLong(0L)
         val rl = IngestRateLimiter(
-            burstCapacity = 0.0,  // every call drops at t=0
+            burstCapacity = 0.0,
             clockMs = { now.get() },
-            onDropsAggregated = { s, r, c -> events.add(Triple(s, r, c)) }
+            onDropsAggregated = { s, c -> events.add(s to c) }
         )
-
-        // 1000 drops, all at t=0 — no refill, no window flush yet.
-        for (k in 0 until 1000) {
-            assertFalse(rl.tryAdmit(senderFp, recipFp))
-        }
+        for (k in 0 until 1000) assertFalse(rl.tryAdmit(senderFp))
         assertTrue("no event expected before window closes, got $events", events.isEmpty())
-
-        // Advance past the 30s window boundary; the next call triggers the
-        // lazy flush of the accumulated drops.
         now.set(30_000L)
-        rl.tryAdmit(senderFp, recipFp)
-
+        rl.tryAdmit(senderFp)
         assertEquals("exactly one aggregated event", 1, events.size)
-        val (sender, recip, count) = events[0]
-        assertEquals(1000L, count)
-        assertEquals(senderFp.toHexLower(), sender)
-        assertEquals(recipFp.toHexLower(), recip)
+        assertEquals(senderFp.toHexLower(), events[0].first)
+        assertEquals(1000L, events[0].second)
     }
 
     @Test
@@ -90,18 +76,96 @@ class IngestRateLimiterTest {
         val now = AtomicLong(0L)
         val rl = IngestRateLimiter(
             clockMs = { now.get() },
-            onDropsAggregated = { _, _, _ -> }
+            onDropsAggregated = { _, _ -> }
         )
         val senderA = ByteArray(32) { 0xA1.toByte() }
         val senderB = ByteArray(32) { 0xB2.toByte() }
+        repeat(200) { assertTrue("A frame $it should admit", rl.tryAdmit(senderA)) }
+        assertFalse("A's 201st frame drops", rl.tryAdmit(senderA))
+        repeat(200) { assertTrue("B frame $it should admit", rl.tryAdmit(senderB)) }
+        assertFalse("B's 201st frame drops", rl.tryAdmit(senderB))
+    }
 
-        // Drain A's bucket; B's bucket should remain full.
-        repeat(200) { assertTrue("A frame $it should admit", rl.tryAdmit(senderA, recipFp)) }
-        assertFalse("A's 201st frame drops", rl.tryAdmit(senderA, recipFp))
+    @Test
+    fun mapBoundedAtMaxBuckets_underUniqueSenderFlood() {
+        val now = AtomicLong(0L)  // fixed clock → no bucket becomes reap-eligible
+        val rl = IngestRateLimiter(
+            maxBuckets = 8,
+            clockMs = { now.get() },
+            onDropsAggregated = { _, _ -> }
+        )
+        for (k in 0 until 100) {
+            rl.tryAdmit(fpOf(k))
+            assertTrue("bucket count ${rl.bucketCount()} exceeded maxBuckets=8 at step $k",
+                rl.bucketCount() <= 8)
+        }
+        // Fixed clock → nothing is reap-eligible, so every insert past the 8th evicts
+        // one (LRU) and re-inserts: the map saturates at exactly the cap. Asserting
+        // the exact value also rejects a degenerate no-op/evict-everything impl.
+        assertEquals("map saturates at the cap under unique-sender flood", 8, rl.bucketCount())
+    }
 
-        // B has its own bucket — 200 admits + 1 drop.
-        repeat(200) { assertTrue("B frame $it should admit", rl.tryAdmit(senderB, recipFp)) }
-        assertFalse("B's 201st frame drops", rl.tryAdmit(senderB, recipFp))
+    @Test
+    fun idleBucketsReaped_whenOverCapAndRefilled() {
+        val now = AtomicLong(0L)
+        val rl = IngestRateLimiter(
+            maxBuckets = 4,
+            burstCapacity = 10.0,
+            sustainedRatePerSec = 10.0,   // idleFullTtlMs = ceil(10/10*1000) = 1000
+            clockMs = { now.get() },
+            onDropsAggregated = { _, _ -> }
+        )
+        for (k in 0 until 4) rl.tryAdmit(fpOf(k))
+        assertEquals(4, rl.bucketCount())
+        now.set(2000L)                    // all 4 idle past TTL → reap-eligible
+        rl.tryAdmit(fpOf(100))
+        assertEquals("idle buckets reaped before insert", 1, rl.bucketCount())
+    }
+
+    @Test
+    fun activeSenderSurvives_lruEvictsIdle() {
+        val now = AtomicLong(0L)
+        val rl = IngestRateLimiter(
+            maxBuckets = 3,
+            burstCapacity = 100.0,
+            sustainedRatePerSec = 100.0,  // idleFullTtlMs = 1000
+            clockMs = { now.get() },
+            onDropsAggregated = { _, _ -> }
+        )
+        val active = fpOf(1)
+        rl.tryAdmit(active)
+        rl.tryAdmit(fpOf(2))
+        rl.tryAdmit(fpOf(3))
+        now.set(500L)
+        rl.tryAdmit(active)               // active.lastRefillMs = 500 (most recent)
+        now.set(600L)
+        rl.tryAdmit(fpOf(4))             // cap hit, none reap-eligible → LRU (fp2 or fp3 @0) evicted
+        assertTrue("active bucket must survive LRU eviction", rl.hasBucket(active))
+        assertTrue("new sender admitted", rl.hasBucket(fpOf(4)))
+        assertEquals(3, rl.bucketCount())
+    }
+
+    @Test
+    fun pendingDropsFlushedOnEviction() {
+        val now = AtomicLong(0L)
+        val events = mutableListOf<Pair<String, Long>>()
+        val rl = IngestRateLimiter(
+            maxBuckets = 2,
+            burstCapacity = 1.0,
+            sustainedRatePerSec = 1.0,    // idleFullTtlMs = 1000
+            clockMs = { now.get() },
+            onDropsAggregated = { s, c -> events.add(s to c) }
+        )
+        val victim = fpOf(1)
+        rl.tryAdmit(victim)              // admit (burst=1 → token 0)
+        rl.tryAdmit(victim)              // drop → pendingDrops=1
+        rl.tryAdmit(victim)              // drop → pendingDrops=2
+        rl.tryAdmit(fpOf(2))
+        now.set(10L); rl.tryAdmit(fpOf(2))   // fp2.lastRefillMs=10 > victim's 0 → victim is LRU
+        now.set(20L); rl.tryAdmit(fpOf(3))   // cap hit, no reap (idle<1000) → evict victim, flush its drops
+        assertEquals(1, events.size)
+        assertEquals(victim.toHexLower(), events[0].first)
+        assertEquals(2L, events[0].second)
     }
 
     private fun ByteArray.toHexLower(): String =
