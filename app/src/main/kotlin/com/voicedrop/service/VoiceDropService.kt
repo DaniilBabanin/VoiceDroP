@@ -452,9 +452,18 @@ class VoiceDropService : Service() {
 
                 // Spec 16-played-receipt.md §3 — fire KIND_PLAYED to the sender on
                 // first inbound play. Guard order matters: read state BEFORE update.
-                val isFirstPlay = message.direction == MessageEntity.DIRECTION_INBOUND &&
+                val isInbound = message.direction == MessageEntity.DIRECTION_INBOUND
+                val isFirstPlay = isInbound &&
                     message.state != MessageEntity.STATE_PLAYED
-                repository.updateMessageState(uuid, MessageEntity.STATE_PLAYED)
+                // Local STATE_PLAYED is the receiver's "I listened" marker — only ever
+                // written on INBOUND rows. Outbound rows reach STATE_PLAYED solely via a
+                // received KIND_PLAYED receipt (PlayedInboundHandler.markPlayed). Flipping
+                // an outbound row on local playback — e.g. reviewing your own sent message,
+                // or playing a note-to-self — would light the blue ✓✓ before the recipient
+                // ever listened.
+                if (isInbound) {
+                    repository.updateMessageState(uuid, MessageEntity.STATE_PLAYED)
+                }
                 if (isFirstPlay) {
                     runCatching {
                         ratchetSender.encryptAndSend(
