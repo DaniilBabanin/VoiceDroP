@@ -436,7 +436,15 @@ class ConnectionManager(
                 return
             }
         }
-        if (!ingestRateLimiter.tryAdmit(decoded.senderFp, decoded.recipFp)) {
+        // Finding #3: drop frames not addressed to this device before the rate
+        // limiter. Removes recipFp as an attack axis and lets the limiter key on
+        // senderFp alone (bounded map). recipFp/ownFingerprint are both lowercase
+        // 64-hex SHA-256 of the X25519 identity key.
+        if (bytesToHex(decoded.recipFp) != ownFingerprint) {
+            Log.w(TAG, "processFrame: recipFp not ours — dropped")
+            return
+        }
+        if (!ingestRateLimiter.tryAdmit(decoded.senderFp)) {
             // IngestRateLimiter aggregates drop telemetry; nothing to do here.
             return
         }
