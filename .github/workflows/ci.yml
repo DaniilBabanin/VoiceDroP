@@ -127,9 +127,10 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Run crypto + storage unit tests
+      - name: Run crypto + storage + network unit tests
         run: |
           ./gradlew testDebugUnitTest \
             --tests "com.voicedrop.crypto.*" \
             --tests "com.voicedrop.storage.*" \
+            --tests "com.voicedrop.network.*" \
             --stacktrace
