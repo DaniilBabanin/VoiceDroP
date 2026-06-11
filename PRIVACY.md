@@ -1,8 +1,8 @@
 # Privacy Policy
 
-**Effective date:** 2026-05-14
-**Version:** 1.1
-**Applies to:** VoiceDrop for Android, all versions through 1.0.x.
+**Effective date:** 2026-06-11
+**Version:** 1.2
+**Applies to:** VoiceDrop for Android, all versions through 1.4.x.
 
 VoiceDrop is an account-free, end-to-end-encrypted voice messaging app. There is no developer-operated backend, no telemetry, and no sign-up. This policy describes the data the app stores on your device, the limited metadata that traverses third-party infrastructure during message delivery, and the practical limits of deletion and erasure.
 
@@ -15,10 +15,10 @@ For security vulnerability reporting and the cryptography export notice, see [SE
 ## Summary
 
 - **No account, no registration, no analytics.** The *developer* operates no service that identifies you. Third-party infrastructure (Cloudflare, Google STUN) does see your IP address — see Sections 2 and 3.
-- **Message audio is end-to-end encrypted** (X25519 ECDH → HKDF-SHA256 → XChaCha20-Poly1305). It is never transmitted or stored in plaintext outside your device or your recipient's device.
+- **Message audio is end-to-end encrypted** with a Double Ratchet (X25519 ECDH ratchet → HKDF-SHA256 → ChaCha20-Poly1305), deriving a fresh key per message. It is never transmitted or stored in plaintext outside your device or your recipient's device.
 - **The Cloudflare Worker** used for signaling and relay sees ciphertext, IP addresses, connection timing, and stable per-contact key fingerprints — but no plaintext audio, display names, or decryption keys.
 - **STUN servers** (Cloudflare and Google) see your public IP address and UDP port when the app performs NAT discovery.
-- **No forward secrecy in v1.0.x.** A compromise of your device's Android Keystore wrapping key would expose all stored messages.
+- **Forward secrecy applies in transit, not at rest.** Per-message keys protect past traffic against a key compromise, but messages already stored on your device are readable by anyone who can read your device's storage (see Section 5).
 - **Deletion across devices is best-effort.** Deleting on your phone removes the message locally immediately; the recipient's copy may or may not be deleted depending on connectivity.
 
 ---
@@ -40,7 +40,7 @@ The developer is neither controller nor processor of any data that your self-hos
 
 Everything below stays on your device. Nothing in this section is transmitted to any server operated by the developer.
 
-- **Voice recordings** — encrypted at rest in `filesDir/messages/` inside the app's private storage. The data-encryption key is wrapped by Android Keystore.
+- **Voice recordings** — stored in `filesDir/messages/` inside the app's private storage, protected by Android file-based encryption (no app-layer at-rest envelope; the Double Ratchet protects data in transit). Cryptographic key material in the local database is wrapped by Android Keystore.
 - **Contacts** — display name and public keys for each paired contact, in a local Room database.
 - **Per-contact preferences** — auto-delete timer (None / 1 h / 24 h / 7 d), pairing verification state, last-seen timestamps.
 - **Outbox queue** — pending outbound messages waiting for delivery, encrypted with the recipient's key.
@@ -67,7 +67,7 @@ The Worker sees:
 
 The Worker does **not** see: plaintext audio, your display name, your contacts' display names, message content, or any decryption key.
 
-**Retention on the Worker.** Relayed ciphertext is deleted from Durable Object storage **as soon as the recipient pulls it**. VoiceDrop v1.0.x does **not** enforce a server-side TTL: if the recipient never pulls, the ciphertext remains in Durable Object storage indefinitely until you redeploy the Worker or manually purge it. A server-side TTL is planned for v1.1.x. As the Worker operator, you may add a Cron Trigger or scheduled handler to purge stale frames; until then, retention duration on the Worker is bounded only by your own deployment lifecycle.
+**Retention on the Worker.** Relayed ciphertext is deleted from Durable Object storage **once the recipient acknowledges pulling it**. Undelivered ciphertext expires automatically after **7 days** (a Durable Object alarm sweeps expired frames). As the Worker operator you can additionally purge frames at any time by redeploying or clearing storage.
 
 **International transfers.** When the app contacts your Cloudflare Worker, your IP address may be transferred outside the EEA, UK, and your home jurisdiction depending on which Cloudflare edge serves the request. These transfers rely on Cloudflare's own transfer mechanisms (Standard Contractual Clauses, EU-US Data Privacy Framework where applicable). The developer is not a party to those transfers; the data exchange is between your device and Cloudflare.
 
@@ -86,13 +86,11 @@ These servers see **your IP address and UDP source port** for the duration of th
 
 ---
 
-## 5. No forward secrecy (v1.0.x)
+## 5. Forward secrecy and stored history
 
-VoiceDrop v1.0.x derives one long-term shared secret per contact pair (X25519 ECDH at pairing time) and uses HKDF-SHA256 to derive per-message keys from that shared secret. The long-term private key is stored wrapped by Android Keystore.
+VoiceDrop encrypts every message with a Double Ratchet: an X25519 DH ratchet feeds HKDF-SHA256 chain keys, and each message is sealed with a fresh ChaCha20-Poly1305 key. Compromising any single message key does not expose earlier traffic (forward secrecy), and the DH ratchet plus the session-reset protocol restore security after a state compromise (post-compromise security). The long-term identity private key is stored wrapped by Android Keystore.
 
-**Implication:** if an attacker obtains both the encrypted message archive on your device *and* the Android Keystore wrapping key, every message you have ever exchanged with a given contact becomes decryptable.
-
-Per-epoch key rotation (forward secrecy) is on the roadmap for v1.1.x but is **not present today**. Do not use VoiceDrop v1.0.x for content that must remain confidential against a future device compromise.
+**Implication for stored history:** forward secrecy protects traffic on the wire, not the archive on your device. Received messages are stored decrypted inside the app's private storage (protected by Android file-based encryption and the auto-delete timers). An attacker with full access to your unlocked device can read whatever messages are still stored. Use the auto-delete timers for content that should not persist.
 
 ---
 
@@ -100,7 +98,7 @@ Per-epoch key rotation (forward secrecy) is on the roadmap for v1.1.x but is **n
 
 When you delete a message on your device, the app:
 
-1. Removes the database row and unlinks the encrypted audio file from the app's private storage. (Note: on flash storage with wear leveling, unlinked data may persist on unallocated blocks until overwritten by the filesystem. The app does not perform cryptographic erasure of the underlying flash cells.)
+1. Removes the database row, overwrites the audio file with zeros in place, and unlinks it from the app's private storage. (Note: on flash storage with wear leveling, the overwrite is best-effort — old data may persist on remapped physical blocks. The app does not perform cryptographic erasure of the underlying flash cells.)
 2. Sends a DELETE signal to the peer through the signaling channel, asking the peer's app to do the same.
 
 The DELETE signal is **best-effort**. If the peer is offline, the signal queues; if the queue is purged or the peer never reconnects to the same signaling URL, the peer's copy is **not deleted**. You should assume that any message you have sent may persist on the recipient's device indefinitely, regardless of your local deletion action.
@@ -168,13 +166,13 @@ Voice recordings may contain protected health information, biometric voiceprints
 
 | Where | What | How long |
 |---|---|---|
-| Your device | Encrypted message audio, contacts, settings | Until you delete a message, the auto-delete timer expires it (receiving side only), you clear app data, or you uninstall. |
-| Your Cloudflare Worker | Relayed ciphertext blobs | Until the recipient pulls (deletion happens on pull). **No server-side TTL in v1.0.x**, so if the recipient never pulls, the blob remains until you intervene as Worker operator. |
+| Your device | Message audio, contacts, settings | Until you delete a message, the auto-delete timer expires it (receiving side only), you clear app data, or you uninstall. |
+| Your Cloudflare Worker | Relayed ciphertext blobs | Until the recipient acknowledges pickup, or 7 days, whichever comes first. |
 | Cloudflare edge / STUN | IP-level operational logs | Per Cloudflare's published retention policy. |
 | Google STUN | IP-level operational logs | Per Google's published retention policy. |
 | Developer systems | (none) | Not applicable — the developer operates no server. |
 
-**Retention criteria for relayed ciphertext on your Worker:** deleted upon recipient pickup; otherwise no automatic expiry in v1.0.x. The criterion is "recipient pickup or operator intervention, whichever first."
+**Retention criteria for relayed ciphertext on your Worker:** deleted upon acknowledged recipient pickup; otherwise expired automatically after 7 days.
 
 ---
 

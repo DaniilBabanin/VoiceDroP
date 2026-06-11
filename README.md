@@ -85,7 +85,9 @@ git tag v1.2.0.12 && git push origin v1.2.0.12
 
 Tag suffix `-pre.N` flips the GitHub release to pre-release; bare tags are stable. The 4-component `versionName` in `app/build.gradle.kts` must match the tag exactly; `versionCode` must increment with every push.
 
-The signing keystore (`app/release.keystore`, PKCS12) is committed; CI signs with hard-coded passwords. The release workflow asserts the signed APK's X.509 certificate SHA-256 matches the value pinned in [`tools/release/expected-signing-cert.sha256`](tools/release/expected-signing-cert.sha256) and refuses to publish on mismatch. Released APKs also include their `classes*.dex` SHA-256 in the release body so anyone can rebuild and compare bytes. Build-integrity scope and deferred follow-ups (dependency-hash pinning, Actions SHA-pinning, full reproducible-build) are tracked in [`tools/release/DR19-FOLLOWUPS.md`](tools/release/DR19-FOLLOWUPS.md).
+The signing keystore (`app/release.keystore`, PKCS12) is committed; CI signs with hard-coded passwords. The release workflow asserts the signed APK's X.509 certificate SHA-256 matches the value pinned in [`tools/release/expected-signing-cert.sha256`](tools/release/expected-signing-cert.sha256) and refuses to publish on mismatch. Released APKs also include their `classes*.dex` SHA-256 in the release body so anyone can rebuild and compare bytes. Build-integrity scope and deferred follow-ups (dependency-hash pinning, full reproducible-build) are tracked in [`tools/release/DR19-FOLLOWUPS.md`](tools/release/DR19-FOLLOWUPS.md).
+
+> ⚠️ **The APK signature is NOT an anti-tamper guarantee.** Because the keystore is public, anyone can re-sign a modified APK with the identical certificate, and Android will install it over the real app with no warning (including via Obtainium/`adb` updates). The cert-SHA pin above only proves the *official CI build's* provenance. The only client-side trust anchor is the release page itself: before sideloading an update obtained anywhere other than this repository's GitHub Releases, compare its SHA-256 against the hashes published in the release notes.
 
 ---
 
