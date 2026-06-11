@@ -37,8 +37,9 @@ object VoiceMessageShare {
 
         val shareDir = File(context.cacheDir, "share").apply { mkdirs() }
         // Drop any stale WAVs from prior shares — the chooser target may still hold a grant,
-        // but a new long-press should always export fresh.
-        shareDir.listFiles()?.forEach { it.delete() }
+        // but a new long-press should always export fresh. Secure wipe: these are
+        // fully-decoded plaintext audio. AutoDeleteWorker sweeps the dir too.
+        shareDir.listFiles()?.forEach { MessageRepository.secureDelete(it) }
 
         val outFile = File(shareDir, "voicedrop-${uuid}.wav")
         writeWav(opusStream, outFile)

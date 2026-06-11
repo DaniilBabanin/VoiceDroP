@@ -65,6 +65,16 @@ class AudioPlayer {
         private var decoder: OpusDecoder? = null
         val completion = CompletableDeferred<Unit>()
 
+        /** True once the loop consumed the full stream (vs. stop()/error). */
+        @Volatile
+        var reachedNaturalEnd: Boolean = false
+            private set
+
+        /** Fraction of the opus stream consumed, 0..1. */
+        val progress: Float
+            get() = if (opusStream.isEmpty()) 0f
+            else cursor.get().toFloat() / opusStream.size.toFloat()
+
         internal fun start() {
             playJob = handleScope.launch { runLoop(this) }
         }
@@ -88,7 +98,6 @@ class AudioPlayer {
                 audioTrack!!.play()
 
                 val accumulator = if (onPeaksReady != null) PeakAccumulator() else null
-                var reachedNaturalEnd = false
 
                 try {
                     val lenBuf = ByteArray(4)
@@ -108,16 +117,19 @@ class AudioPlayer {
                         if (ofs + 4 + packetSize > opusStream.size) break
 
                         val packetBuf = ByteArray(packetSize)
-                        mutex.withLock {
+                        // Decode under the same mutex seek() holds: seek releases and
+                        // recreates the native decoder, and a decode racing close()
+                        // is a native use-after-free.
+                        val pcm = mutex.withLock {
                             System.arraycopy(opusStream, ofs + 4, packetBuf, 0, packetSize)
                             cursor.set(ofs + 4 + packetSize)
-                        }
-                        val pcm = try {
-                            decoder!!.decode(packetBuf)
-                        } catch (t: Throwable) {
-                            Log.w(TAG, "decode failed at offset=$ofs size=$packetSize: ${t.message}")
-                            break@outer
-                        }
+                            try {
+                                decoder!!.decode(packetBuf)
+                            } catch (t: Throwable) {
+                                Log.w(TAG, "decode failed at offset=$ofs size=$packetSize: ${t.message}")
+                                null
+                            }
+                        } ?: break@outer
                         accumulator?.feed(pcm, pcm.size)
                         val bytes = shortsToBytes(pcm)
                         audioTrack!!.write(bytes, 0, bytes.size)

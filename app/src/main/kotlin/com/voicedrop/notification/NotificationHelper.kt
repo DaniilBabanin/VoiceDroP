@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.voicedrop.R
@@ -55,11 +56,17 @@ class NotificationHelper(private val context: Context) {
         val seconds = (durationMs % 60000) / 1000
         val duration = if (minutes > 0) "${minutes}m ${seconds}s" else "${seconds}s"
 
+        // setData makes the Intents filterEquals-distinct per (uuid, action):
+        // request codes derive from uuid.hashCode(), so two messages whose hashes
+        // land near each other would otherwise share a PendingIntent and
+        // FLAG_UPDATE_CURRENT would repoint its uuid extra — Play/Delete/Share
+        // acting on the wrong message.
         val playIntent = PendingIntent.getBroadcast(
             context,
             notifId,
             Intent(context, NotificationActionReceiver::class.java).apply {
                 action = NotificationActionReceiver.ACTION_PLAY
+                data = Uri.parse("voicedrop://msg/$uuid/play")
                 putExtra("uuid", uuid)
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -70,6 +77,7 @@ class NotificationHelper(private val context: Context) {
             notifId + 1,
             Intent(context, NotificationActionReceiver::class.java).apply {
                 action = NotificationActionReceiver.ACTION_DELETE
+                data = Uri.parse("voicedrop://msg/$uuid/delete")
                 putExtra("uuid", uuid)
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -80,6 +88,7 @@ class NotificationHelper(private val context: Context) {
             notifId + 3,
             Intent(context, NotificationActionReceiver::class.java).apply {
                 action = NotificationActionReceiver.ACTION_SHARE
+                data = Uri.parse("voicedrop://msg/$uuid/share")
                 putExtra("uuid", uuid)
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -110,6 +119,17 @@ class NotificationHelper(private val context: Context) {
     }
 
     fun buildRecordingNotification(contactName: String, startTimeMillis: Long): Notification {
+        // Lockscreen shows only the redacted public version — the "recording"
+        // fact stays glanceable but the recipient name is keyguard-gated.
+        val publicVersion = NotificationCompat.Builder(context, CHANNEL_RECORDING)
+            .setSmallIcon(R.drawable.ic_tile_recording)
+            .setContentTitle("🔴 Recording — tap to stop")
+            .setOngoing(true)
+            .setWhen(startTimeMillis)
+            .setShowWhen(true)
+            .setUsesChronometer(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
         return NotificationCompat.Builder(context, CHANNEL_RECORDING)
             .setSmallIcon(R.drawable.ic_tile_recording)
             .setContentTitle("🔴 Recording — tap to stop")
@@ -119,7 +139,8 @@ class NotificationHelper(private val context: Context) {
             .setShowWhen(true)
             .setUsesChronometer(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicVersion)
             .build()
     }
 

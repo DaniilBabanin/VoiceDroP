@@ -39,18 +39,26 @@ class NotificationActionReceiver : BroadcastReceiver() {
 
             ACTION_DELETE -> {
                 if (uuid == null) return
+                // goAsync keeps the process alive until the coroutine finishes —
+                // without it the local delete + remote DELETE enqueue can be lost
+                // to process death after onReceive returns (mirrors SHARE below).
+                val pendingResult = goAsync()
                 scope.launch {
-                    val message = repository.getMessage(uuid) ?: return@launch
+                    try {
+                        val message = repository.getMessage(uuid) ?: return@launch
 
-                    // Local DELETE — refcount-aware: the audio file is wiped only when
-                    // no other recipient's row still references it (fan-out safe).
-                    // Sender-side handling is unchanged from v1 per dr17.5 — only the
-                    // outbound wire encoding changes.
-                    repository.markDeletedWithBlobRefcount(message)
-                    notificationHelper.cancelNotification(uuid.hashCode())
+                        // Local DELETE — refcount-aware: the audio file is wiped only when
+                        // no other recipient's row still references it (fan-out safe).
+                        // Sender-side handling is unchanged from v1 per dr17.5 — only the
+                        // outbound wire encoding changes.
+                        repository.markDeletedWithBlobRefcount(message)
+                        notificationHelper.cancelNotification(uuid.hashCode())
 
-                    val targetUuidObj = runCatching { UUID.fromString(uuid) }.getOrNull() ?: return@launch
-                    sendRemoteDelete(context, db, message.contactId, targetUuidObj)
+                        val targetUuidObj = runCatching { UUID.fromString(uuid) }.getOrNull() ?: return@launch
+                        sendRemoteDelete(context, db, message.contactId, targetUuidObj)
+                    } finally {
+                        pendingResult.finish()
+                    }
                 }
             }
 

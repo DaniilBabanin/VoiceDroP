@@ -68,22 +68,27 @@ class AudioRecorder {
         val buffer = ShortArray(frameSize)
         val peakAccumulator = PeakAccumulator()
 
-        while (recording && isActive) {
-            val read = ar.read(buffer, 0, frameSize)
-            if (read > 0) {
-                peakAccumulator.feed(buffer, read)
-                val pcmBytes = shortsToBytes(buffer, read)
-                val encoded = encoder.encode(pcmBytes)
-                output.write(encoded.size.toLittleEndianBytes())
-                output.write(encoded)
-                onFrame(encoded)
+        try {
+            while (recording && isActive) {
+                val read = ar.read(buffer, 0, frameSize)
+                if (read > 0) {
+                    peakAccumulator.feed(buffer, read)
+                    val pcmBytes = shortsToBytes(buffer, read)
+                    val encoded = encoder.encode(pcmBytes)
+                    output.write(encoded.size.toLittleEndianBytes())
+                    output.write(encoded)
+                    onFrame(encoded)
+                }
             }
+            RecordResult(opus = output.toByteArray(), peaks = peakAccumulator.build())
+        } finally {
+            // Teardown must run even when encode/write throws — otherwise the mic
+            // stream stays open (blocking other apps) and the native encoder leaks.
+            runCatching { ar.stop() }
+            runCatching { ar.release() }
+            runCatching { encoder.release() }
+            audioRecord = null
         }
-
-        ar.stop()
-        ar.release()
-        encoder.release()
-        RecordResult(opus = output.toByteArray(), peaks = peakAccumulator.build())
     }
 
     private fun Int.toLittleEndianBytes(): ByteArray =
