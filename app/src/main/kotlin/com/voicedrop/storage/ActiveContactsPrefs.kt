@@ -9,6 +9,9 @@ object ActiveContactsPrefs {
     // Legacy v1.1.0.11–v1.2.x single-default key. Migrated lazily on first read.
     private const val KEY_LEGACY_DEFAULT = "pref_default_contact_id"
     private const val KEY_DEFAULT_MIGRATED = "pref_default_migrated_to_set"
+    // Distinguishes "user explicitly (de)selected" from "never configured" — an
+    // explicitly emptied set must not fall back to the newest contact.
+    private const val KEY_CONFIGURED = "pref_active_ids_configured"
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -23,7 +26,10 @@ object ActiveContactsPrefs {
     }
 
     fun setActiveIds(context: Context, ids: Set<String>) {
-        prefs(context).edit().putStringSet(KEY_ACTIVE_IDS, ids).apply()
+        prefs(context).edit()
+            .putStringSet(KEY_ACTIVE_IDS, ids)
+            .putBoolean(KEY_CONFIGURED, true)
+            .apply()
     }
 
     /**
@@ -52,6 +58,10 @@ object ActiveContactsPrefs {
             setActiveIds(context, resolved.map { it.id }.toSet())
         }
         if (resolved.isNotEmpty()) return resolved
+        // Newest-contact fallback only when the pref was never written — when the
+        // user explicitly deselected everyone, return empty so callers show the
+        // picker instead of misdirecting to the most-recently-paired contact.
+        if (prefs(context).getBoolean(KEY_CONFIGURED, false)) return emptyList()
         return listOfNotNull(contacts.maxByOrNull { it.addedAt })
     }
 
