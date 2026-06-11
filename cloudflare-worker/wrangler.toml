@@ -1,6 +1,9 @@
 name = "voicedrop-signaling"
 main = "src/index.ts"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-12-01"
+
+[observability]
+enabled = true
 
 [[durable_objects.bindings]]
 name = "SIGNALING_ROOM"
@@ -9,7 +12,3 @@ class_name = "SignalingRoom"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SignalingRoom"]
-
-[[kv_namespaces]]
-binding = "RELAY_STORE"
-id = "5d60a24d0610448aafdc32dfae7afc0b"
