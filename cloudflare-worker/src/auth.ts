@@ -104,7 +104,7 @@ export async function buildProofMac(privKey: CryptoKey, peerPubRaw: Uint8Array, 
   const peerPub = await crypto.subtle.importKey('raw', peerPubRaw, { name: 'X25519' }, false, []);
   // workers-types models the runtime's `public` param as `$public`; the actual
   // runtime accepts the standard WebCrypto field name.
-  const ss = await crypto.subtle.deriveBits({ name: 'X25519', public: peerPub } as unknown as AlgorithmIdentifier, privKey, 256);
+  const ss = await crypto.subtle.deriveBits({ name: 'X25519', public: peerPub } as unknown as SubtleCryptoDeriveKeyAlgorithm, privKey, 256);
   return macFromSharedSecret(ss, nonce, fpBytes);
 }
 
@@ -115,7 +115,7 @@ export async function verifyProof(
   let got: Uint8Array;
   try { got = b64decode(macB64); } catch { return false; }
   const identityPub = await crypto.subtle.importKey('raw', identityPubRaw, { name: 'X25519' }, false, []);
-  const ss = await crypto.subtle.deriveBits({ name: 'X25519', public: identityPub } as unknown as AlgorithmIdentifier, serverPriv, 256);
+  const ss = await crypto.subtle.deriveBits({ name: 'X25519', public: identityPub } as unknown as SubtleCryptoDeriveKeyAlgorithm, serverPriv, 256);
   const expected = await macFromSharedSecret(ss, nonce, fpBytes);
   if (expected.length !== got.length) return false;
   return crypto.subtle.timingSafeEqual(expected, got);
