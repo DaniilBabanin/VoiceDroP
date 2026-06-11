@@ -35,6 +35,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -49,6 +50,7 @@ import java.io.File
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -100,18 +102,30 @@ class ConnectionManager(
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
-    private val connections = mutableMapOf<String, PeerConnection>()
-    private val connectionTransports = mutableMapOf<String, TransportType>()
-    private val transmitMutexes = mutableMapOf<String, Mutex>()
-    private val backoffJobs = mutableMapOf<String, Job>()
+    // ConcurrentHashMap: these maps are touched from transmit callers, backoff
+    // coroutines, LAN discovery, signaling collectors and stop() concurrently;
+    // computeIfAbsent makes per-contact mutex creation atomic.
+    private val connections = ConcurrentHashMap<String, PeerConnection>()
+    private val connectionTransports = ConcurrentHashMap<String, TransportType>()
+    private val transmitMutexes = ConcurrentHashMap<String, Mutex>()
+    private val backoffJobs = ConcurrentHashMap<String, Job>()
     private val connector = PeerConnector()
     private val stunClient = StunClient()
 
+    // Bounds concurrent unsolicited inbound sockets (anyone can reach the port).
+    private val inboundSemaphore = Semaphore(MAX_INBOUND_CONNECTIONS)
+
+    // In-memory mirror of contact ids (= sender fingerprints, lowercase hex).
+    // Lets processFrame drop unknown-sender frames before any rate-limit bucket
+    // allocation or per-packet DB lookup — senderFp is attacker-controlled.
+    private val knownContactIds = ConcurrentHashMap.newKeySet<String>()
+    @Volatile private var knownContactsLoaded = false
+
     // LAN peers seen via NSD — keyed by fingerprint
-    private val lanPeers = mutableMapOf<String, LanPeer>()
+    private val lanPeers = ConcurrentHashMap<String, LanPeer>()
 
     // Persistent signaling connections for presence (one per contact)
-    private val signalingClients = mutableMapOf<String, SignalingClient>()
+    private val signalingClients = ConcurrentHashMap<String, SignalingClient>()
 
     private var lanDiscovery: LanDiscovery? = null
     private var listenPort: Int = 0
@@ -138,6 +152,14 @@ class ConnectionManager(
                 .build(),
             networkCallback
         )
+
+        scope.launch {
+            repository.getAllContacts().collect { contacts ->
+                knownContactIds.retainAll(contacts.map { it.id }.toSet())
+                knownContactIds.addAll(contacts.map { it.id })
+                knownContactsLoaded = true
+            }
+        }
 
         listenPort = (10000..60000).random()
         Log.i(TAG, "Listening on port $listenPort")
@@ -176,7 +198,7 @@ class ConnectionManager(
     suspend fun transmit(contactId: String, frame: ByteArray): TransportType {
         val fp = contactId.take(8)
         Log.i(TAG, "transmit fp=$fp frameBytes=${frame.size}")
-        val mutex = transmitMutexes.getOrPut(contactId) { Mutex() }
+        val mutex = transmitMutexes.computeIfAbsent(contactId) { Mutex() }
         return mutex.withLock {
             val transport = when {
                 tryExistingConnection(contactId, frame) ->
@@ -349,25 +371,31 @@ class ConnectionManager(
      */
     private fun startActiveBackoff(contactId: String) {
         val fp = contactId.take(8)
-        backoffJobs[contactId]?.cancel()
-        backoffJobs[contactId] = scope.launch {
-            val delays = DEFAULT_BACKOFF_MS
-            var attempt = 0
-            while (attempt < BACKOFF_MAX_ATTEMPTS) {
-                val delayMs = delays.getOrElse(attempt) { delays.last() }
-                if (VERBOSE) Log.d(TAG, "backoff fp=$fp: attempt $attempt — waiting ${delayMs / 1000}s")
-                delay(delayMs)
-                if (VERBOSE) Log.d(TAG, "backoff fp=$fp: attempt $attempt — retrying")
-                pendingOutboxReplay.replayAll()
-                val remaining = db.pendingOutboundFrameDao().countForContact(contactId)
-                if (remaining == 0) {
-                    Log.i(TAG, "backoff fp=$fp: outbox empty after attempt $attempt")
-                    break
+        // The backoff tick re-enters transmit via replayAll; on failure transmit
+        // calls back in here. Cancelling+relaunching would kill the running loop
+        // and reset attempt to 0, defeating BACKOFF_MAX_ATTEMPTS — keep an active
+        // loop instead. compute() makes check-then-launch atomic.
+        backoffJobs.compute(contactId) { _, existing ->
+            if (existing?.isActive == true) return@compute existing
+            scope.launch {
+                val delays = DEFAULT_BACKOFF_MS
+                var attempt = 0
+                while (attempt < BACKOFF_MAX_ATTEMPTS) {
+                    val delayMs = delays.getOrElse(attempt) { delays.last() }
+                    if (VERBOSE) Log.d(TAG, "backoff fp=$fp: attempt $attempt — waiting ${delayMs / 1000}s")
+                    delay(delayMs)
+                    if (VERBOSE) Log.d(TAG, "backoff fp=$fp: attempt $attempt — retrying")
+                    pendingOutboxReplay.replayAll()
+                    val remaining = db.pendingOutboundFrameDao().countForContact(contactId)
+                    if (remaining == 0) {
+                        Log.i(TAG, "backoff fp=$fp: outbox empty after attempt $attempt")
+                        break
+                    }
+                    attempt++
                 }
-                attempt++
-            }
-            if (attempt >= BACKOFF_MAX_ATTEMPTS) {
-                Log.w(TAG, "backoff fp=$fp: max attempts reached (give-up caps still apply per row)")
+                if (attempt >= BACKOFF_MAX_ATTEMPTS) {
+                    Log.w(TAG, "backoff fp=$fp: max attempts reached (give-up caps still apply per row)")
+                }
             }
         }
     }
@@ -385,10 +413,16 @@ class ConnectionManager(
 
     private suspend fun receiveLoop(contactId: String, conn: PeerConnection) {
         Log.d(TAG, "receiveLoop fp=${contactId.take(8)}: started")
-        conn.receiveFlow().collect { frame ->
-            val transport = connectionTransports[contactId] ?: TransportType.UNKNOWN
-            Log.i(TAG, "receiveLoop fp=${contactId.take(8)}: received ${frame.size} bytes transport=$transport")
-            processFrame(frame, transport)
+        try {
+            conn.receiveFlow().collect { frame ->
+                val transport = connectionTransports[contactId] ?: TransportType.UNKNOWN
+                Log.i(TAG, "receiveLoop fp=${contactId.take(8)}: received ${frame.size} bytes transport=$transport")
+                processFrame(frame, transport)
+            }
+        } finally {
+            // Flow end (EOF/error) leaves the socket open otherwise — close so the
+            // FD is reclaimed; tryExistingConnection prunes the map entry later.
+            conn.close()
         }
         Log.d(TAG, "receiveLoop fp=${contactId.take(8)}: ended")
     }
@@ -417,16 +451,29 @@ class ConnectionManager(
 
     private fun handleIncoming(socket: Socket) {
         val addr = socket.inetAddress.hostAddress
+        // Unsolicited inbound: cap concurrency and reap half-open sockets, or any
+        // host reaching the port can exhaust FDs/memory (10 MB frame buffer each).
+        if (!inboundSemaphore.tryAcquire()) {
+            Log.w(TAG, "handleIncoming: inbound cap reached — rejecting $addr")
+            runCatching { socket.close() }
+            return
+        }
         val transport = if (socket.inetAddress.isSiteLocalAddress ||
             socket.inetAddress.isLinkLocalAddress ||
             socket.inetAddress.isLoopbackAddress
         ) TransportType.LAN else TransportType.P2P
         Log.i(TAG, "handleIncoming: from $addr transport=$transport")
+        runCatching { socket.soTimeout = INBOUND_READ_IDLE_TIMEOUT_MS }
         val conn = PeerConnection(socket)
         scope.launch {
-            conn.receiveFlow().collect { frame ->
-                Log.i(TAG, "handleIncoming: received ${frame.size} bytes from $addr")
-                processFrame(frame, transport)
+            try {
+                conn.receiveFlow().collect { frame ->
+                    Log.i(TAG, "handleIncoming: received ${frame.size} bytes from $addr")
+                    processFrame(frame, transport)
+                }
+            } finally {
+                conn.close()
+                inboundSemaphore.release()
             }
             Log.d(TAG, "handleIncoming: flow ended for $addr")
         }
@@ -452,12 +499,19 @@ class ConnectionManager(
             Log.w(TAG, "processFrame: recipFp not ours — dropped")
             return
         }
+        val senderHex = bytesToHex(decoded.senderFp)
+        // Known-sender gate BEFORE bucket creation: a spoofed-fp flood must not
+        // allocate rate-limit buckets (forcing O(n) eviction scans) or hit the
+        // DB per packet. Falls through to the DB until the contacts flow loads.
+        if (knownContactsLoaded && senderHex !in knownContactIds) {
+            Log.w(TAG, "processFrame: unknown sender ${senderHex.take(8)}")
+            return
+        }
         if (!ingestRateLimiter.tryAdmit(decoded.senderFp)) {
             // IngestRateLimiter aggregates drop telemetry; nothing to do here.
             return
         }
 
-        val senderHex = bytesToHex(decoded.senderFp)
         val contact = repository.getContact(senderHex) ?: run {
             Log.w(TAG, "processFrame: unknown sender ${senderHex.take(8)}")
             return
@@ -545,9 +599,15 @@ class ConnectionManager(
                 null
             }
             is MessagePayload.Parsed.Delete -> {
+                // contactId + INBOUND guards (mirroring markPlayedBlocking): a peer
+                // may only retract messages THEY sent to us — never our outbound
+                // rows (our record of what we sent them), never other contacts'.
                 val targetUuidStr = parsed.targetUuid.toString()
-                val deleted = db.openHelper.writableDatabase
-                    .delete("messages", "uuid = ?", arrayOf(targetUuidStr))
+                val deleted = db.openHelper.writableDatabase.delete(
+                    "messages",
+                    "uuid = ? AND contactId = ? AND direction = ${MessageEntity.DIRECTION_INBOUND}",
+                    arrayOf(targetUuidStr, contact.id)
+                )
                 Log.i(TAG, "DELETE from ${contact.id.take(8)} target=${targetUuidStr.take(8)} rowsDeleted=$deleted")
                 null
             }
@@ -624,10 +684,15 @@ class ConnectionManager(
             }
             is MessagePayload.Parsed.Delete -> {
                 // Row was deleted in-txn; clear the audio file + cancel any active
-                // notification. Best-effort.
+                // notification. Best-effort. Refcount before wiping so a blob still
+                // referenced by another row (or an unmatched/guarded-out delete)
+                // survives; orphans (zero rows) get the secure wipe.
                 val targetUuidStr = parsed.targetUuid.toString()
                 val opusFile = File(context.filesDir, "messages/$targetUuidStr.opus")
-                if (opusFile.exists()) opusFile.delete()
+                if (opusFile.exists()) {
+                    val remaining = db.messageDao().countByEncryptedFilePath(opusFile.absolutePath)
+                    if (remaining == 0) MessageRepository.secureDelete(opusFile)
+                }
                 notificationHelper.cancelNotification(targetUuidStr.hashCode())
             }
             is MessagePayload.Parsed.Played -> {
@@ -642,7 +707,7 @@ class ConnectionManager(
 
     private suspend fun startLanDiscovery() {
         Log.i(TAG, "startLanDiscovery: registering _voicedrop._tcp on port $listenPort")
-        lanDiscovery = LanDiscovery(context, ownFingerprint)
+        lanDiscovery = LanDiscovery(context, ownFingerprint, knownFingerprints = { knownContactIds })
         lanDiscovery?.start(listenPort)
         lanDiscovery?.discoveredPeers?.collect { peer ->
             Log.i(TAG, "LAN: fp=${peer.fingerprint.take(8)} at ${peer.host}:${peer.port}")
@@ -770,14 +835,26 @@ class ConnectionManager(
         }
         val obj = Json.parseToJsonElement(responseBody) as? JsonObject ?: return
         val frames = obj["frames"]?.jsonArray ?: return
+        val ids = obj["ids"]?.jsonArray
         Log.i(TAG, "presence: pull fp=$fp — ${frames.size} frame(s)")
-        for (frameEl in frames) {
+        val processedIds = mutableListOf<String>()
+        for ((i, frameEl) in frames.withIndex()) {
             try {
                 val base64 = frameEl.jsonPrimitive.content
                 val bytes = android.util.Base64.decode(base64, android.util.Base64.NO_WRAP)
                 processFrame(bytes, TransportType.RELAY)
+                ids?.getOrNull(i)?.let { processedIds.add(it.jsonPrimitive.content) }
             } catch (e: Exception) {
                 Log.w(TAG, "presence: relay_frame error fp=$fp — ${e.message}")
+            }
+        }
+        // Pull is non-destructive on the worker; ack what we processed so it is
+        // deleted. Unacked frames re-deliver next pull (ratchet dedups them).
+        if (processedIds.isNotEmpty()) {
+            try {
+                executeAck(roomKey, token, processedIds)
+            } catch (e: Exception) {
+                Log.w(TAG, "presence: ack error fp=$fp — ${e.message}")
             }
         }
     }
@@ -804,6 +881,28 @@ class ConnectionManager(
         return "$scheme://$host/pull/$roomKey/$ownFingerprint"
     }
 
+    /** POST /ack/{roomKey}/{ownFp} with the pulled frame ids we have persisted. */
+    private fun executeAck(roomKey: String, token: String, ids: List<String>) {
+        val scheme = if (workerUrl.startsWith("wss://")) "https" else "http"
+        val host = workerUrl
+            .removePrefix("wss://")
+            .removePrefix("ws://")
+            .substringBefore("/")
+        val payload = buildString {
+            append("{\"ids\":[")
+            append(ids.joinToString(",") { "\"$it\"" })
+            append("]}")
+        }
+        val request = Request.Builder()
+            .url("$scheme://$host/ack/$roomKey/$ownFingerprint")
+            .addHeader("Authorization", "Bearer $token")
+            .post(payload.toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+        httpClient.newCall(request).execute().use { resp ->
+            if (!resp.isSuccessful) Log.w(TAG, "presence: ack failed code=${resp.code}")
+        }
+    }
+
     private suspend fun tryRelayUpload(contactId: String, frame: ByteArray): Boolean {
         val fp = contactId.take(8)
         if (!relayFallbackEnabled) {
@@ -811,11 +910,21 @@ class ConnectionManager(
             return false
         }
         if (workerUrl.isBlank()) return false
+        // Relay writes are token-gated (bound to OUR fingerprint) — the token is
+        // minted by this contact's room DO during the presence WS DH handshake.
+        val client = signalingClients[contactId]
+        val token = client?.authToken ?: client?.ensureFreshToken() ?: run {
+            Log.w(TAG, "relay fp=$fp: no auth token — skipping relay path")
+            return false
+        }
         val url = deriveRelayUrl(contactId)
         Log.d(TAG, "relay fp=$fp: uploading ${frame.size} bytes")
         return try {
             val body = frame.toRequestBody("application/octet-stream".toMediaTypeOrNull())
-            val request = Request.Builder().url(url).post(body).build()
+            val request = Request.Builder().url(url)
+                .addHeader("Authorization", "Bearer $token")
+                .post(body)
+                .build()
             httpClient.newCall(request).execute().use { response ->
                 response.isSuccessful.also {
                     if (it) Log.i(TAG, "relay fp=$fp: uploaded")
@@ -847,6 +956,8 @@ class ConnectionManager(
         private const val VERBOSE = true
         private const val BACKOFF_MAX_ATTEMPTS = 20
         private val DEFAULT_BACKOFF_MS = listOf(5_000L, 10_000L, 20_000L, 40_000L, 60_000L)
+        private const val MAX_INBOUND_CONNECTIONS = 32
+        private const val INBOUND_READ_IDLE_TIMEOUT_MS = 60_000
 
         /** 16-byte UUID bytes → standard dashed UUID string (matches `UUID.toString()`). */
         private fun uuidBytesToUuidString(bytes: ByteArray): String {

@@ -70,8 +70,15 @@ class SignalingClient(
         .pingInterval(20, TimeUnit.SECONDS)
         .build()
 
-    private val signalChannel = Channel<Signal>(Channel.UNLIMITED)
+    // Bounded: an UNLIMITED channel fed by the WS thread while the consumer does
+    // slow ratchet decryption lets a hostile/compromised relay OOM the app by
+    // pushing relay_frames faster than they drain. Overflow drops (trySend fails)
+    // — dropped relay frames are recovered by the sender's outbox retransmit.
+    private val signalChannel = Channel<Signal>(capacity = SIGNAL_BUFFER)
     private var webSocket: WebSocket? = null
+    // hello (public IP + presence) is held back until the DH proof completes —
+    // pre-auth, anyone who can derive the room key could harvest stunAddr.
+    @Volatile private var pendingHello: Signal.Hello? = null
     // encodeDefaults so `type` (which has a default value on each Signal subclass) is included
     // on the wire — without it, send() emits typeless JSON that receivers can't dispatch on.
     private val json = Json {
@@ -92,11 +99,10 @@ class SignalingClient(
 
         val request = Request.Builder().url(url).build()
 
+        pendingHello = Signal.Hello(fingerprint = ownFingerprint, stunAddr = stunAddr)
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
-                Log.i(TAG, "onOpen: room=$roomKey — sending hello")
-                val hello = """{"type":"hello","fingerprint":"$ownFingerprint","stunAddr":"$stunAddr"}"""
-                ws.send(hello)
+                Log.i(TAG, "onOpen: room=$roomKey — authenticating (hello deferred)")
                 val identityPub = keyManager.getPublicKeyBase64()
                 ws.send(json.encodeToString<Signal.AuthRequest>(Signal.AuthRequest(identityPub = identityPub)))
             }
@@ -109,8 +115,17 @@ class SignalingClient(
                     is Signal.AuthToken -> {
                         authToken = sig.token
                         tokenWaiter?.complete(sig.token); tokenWaiter = null
+                        pendingHello?.let { hello ->
+                            pendingHello = null
+                            Log.i(TAG, "auth complete — sending hello")
+                            send(hello)
+                        }
                     }
-                    else -> signalChannel.trySend(sig)
+                    else -> {
+                        if (signalChannel.trySend(sig).isFailure) {
+                            Log.w(TAG, "signal channel full — dropped ${sig.javaClass.simpleName}")
+                        }
+                    }
                 }
             }
 
@@ -201,5 +216,6 @@ class SignalingClient(
 
     companion object {
         private const val TAG = "VoiceDrop/Signaling"
+        private const val SIGNAL_BUFFER = 256
     }
 }

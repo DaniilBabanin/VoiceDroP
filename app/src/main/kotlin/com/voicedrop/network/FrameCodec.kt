@@ -197,6 +197,10 @@ object FrameCodec {
 
         val pn = buf.int
         val n = buf.int
+        // Signed read of attacker bytes: a negative pn/n would surface as an
+        // uncaught IllegalArgumentException in the ratchet (require(n >= 0)) —
+        // remotely-triggerable crash. Drop structurally instead.
+        if (pn < 0 || n < 0) return DecodeResult.Drop(DropReason.BAD_LAYOUT)
         val uuid = ByteArray(UUID_BYTES).also { buf.get(it) }
         val timestampMs = buf.long
 

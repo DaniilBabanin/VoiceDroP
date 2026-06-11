@@ -105,14 +105,22 @@ class SignalingClientTest {
         return msg!!
     }
 
-    /** Drain the two messages the client auto-sends on open: hello, then auth_request. */
+    /** Drain the single message the client auto-sends on open: auth_request (hello is deferred until auth_token). */
     private fun drainHandshakeFromClient() {
-        nextServerMessage() // hello
         nextServerMessage() // auth_request
     }
 
     @Test
-    fun connect_sendsHelloOnOpen() {
+    fun connect_sendsAuthRequestOnOpen_helloDeferredUntilToken() {
+        // hello (public IP + presence) must not go out pre-auth — anyone who
+        // can derive the room key could harvest stunAddr otherwise.
+        val first = json.parseToJsonElement(nextServerMessage()).jsonObject
+        assertEquals("auth_request", first["type"]?.jsonPrimitive?.content)
+
+        serverSocket.get()!!.send(
+            json.encodeToString(Signal.AuthToken(token = "t", expiresAt = Long.MAX_VALUE))
+        )
+
         val obj = json.parseToJsonElement(nextServerMessage()).jsonObject
         assertEquals("hello", obj["type"]?.jsonPrimitive?.content)
         assertEquals(ownFingerprint, obj["fingerprint"]?.jsonPrimitive?.content)
@@ -121,7 +129,7 @@ class SignalingClientTest {
 
     @Test
     fun send_serializesAllSignalSubclassesWithTypeField() {
-        // Drain hello + auth_request first; also confirms the WebSocket is open before further sends.
+        // Drain auth_request first; also confirms the WebSocket is open before further sends.
         drainHandshakeFromClient()
 
         val outbound = listOf(
@@ -158,7 +166,7 @@ class SignalingClientTest {
 
     @Test
     fun signals_deserializesAllInboundSubclasses() = runBlocking {
-        // After auto-hello arrives at the server, serverSocket has been set in onOpen.
+        // After the auto auth_request arrives at the server, serverSocket has been set in onOpen.
         nextServerMessage()
         val ws = serverSocket.get()!!
 
@@ -181,7 +189,7 @@ class SignalingClientTest {
 
     @Test
     fun roundTrip_clientSerializedSignalsParseBackToOriginals() = runBlocking {
-        // Drain hello + auth_request so subsequent server-received items are exactly what client.send produced.
+        // Drain auth_request so subsequent server-received items are exactly what client.send produced.
         drainHandshakeFromClient()
         val ws = serverSocket.get()!!
 
@@ -206,8 +214,7 @@ class SignalingClientTest {
 
     @Test
     fun handshake_yields_token() = runBlocking {
-        // 1. Drain hello; capture the auth_request to read the client's identityPub.
-        nextServerMessage() // hello
+        // 1. Capture the auth_request (the first auto-sent message) to read the client's identityPub.
         val authReq = json.parseToJsonElement(nextServerMessage()).jsonObject
         assertEquals("auth_request", authReq["type"]?.jsonPrimitive?.content)
         val clientPub = android.util.Base64.decode(
