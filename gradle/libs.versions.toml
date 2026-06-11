@@ -18,7 +18,7 @@ junit = "4.13.2"
 androidxTest = "1.7.0"
 androidxTestExt = "1.2.1"
 espresso = "3.6.1"
-robolectric = "4.13"
+robolectric = "4.16.1"
 aboutlibraries = "11.6.3"
 markwon = "4.6.2"
 
