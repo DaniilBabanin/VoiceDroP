@@ -58,7 +58,7 @@ describe('verifyProof', () => {
   // Test-only: derive ss from the raw SERVER_PRIV scalar with @noble/curves, since the
   // worker runtime cannot raw-import a private scalar to a CryptoKey. @noble stays out of src/.
   it('matches the frozen Kotlin golden vector', async () => {
-    const { x25519 } = await import('@noble/curves/ed25519'); // test dependency only
+    const { x25519 } = await import('@noble/curves/ed25519.js'); // test dependency only (v2 exports need explicit .js)
     const serverPriv = fromHex('2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40');
     const identityPub = fromHex('07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c'); // from Part 0
     const nonce = fromHex('000102030405060708090a0b0c0d0e0f');
