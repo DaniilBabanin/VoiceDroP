@@ -298,33 +298,44 @@ object Ratchet {
             return pt
         }
 
-        // 2) Slow path: clone, derive, only commit on AEAD success.
+        // 2) Slow path: clone, derive, only commit on AEAD success. The finally
+        // zeroizes the derived material on EVERY exit — without it, an
+        // attacker-repeatable forged frame leaves mk / staged skipped mks /
+        // clone chain keys as heap residue on the AEAD-failure throw path.
         val clone = state.clone()
         val pendingInserts = mutableListOf<PendingInsert>()
+        var committed = false
+        try {
+            if (!byteArrayEqualsNullable(headerDhPub, clone.dhrPub)) {
+                // Catch up old receiving chain BEFORE rotating DHr.
+                skipMessageKeys(clone, headerPn, pendingInserts)
+                dhRatchetReceive(clone, headerDhPub)
+            }
+            // Catch up current receiving chain (post-rotation if we rotated, otherwise current).
+            skipMessageKeys(clone, headerN, pendingInserts)
 
-        if (!byteArrayEqualsNullable(headerDhPub, clone.dhrPub)) {
-            // Catch up old receiving chain BEFORE rotating DHr.
-            skipMessageKeys(clone, headerPn, pendingInserts)
-            dhRatchetReceive(clone, headerDhPub)
+            val ckr = clone.ckr ?: throw InvalidFrame("no receiving chain available")
+            val (newCkr, mk) = RatchetKdf.kdfCk(ckr)
+            ckr.fill(0)
+            clone.ckr = newCkr
+            clone.nr += 1
+
+            // AEAD: throws on failure → clone discarded → state untouched.
+            val plaintext = try {
+                aeadOpen(mk, ciphertext, aad)
+            } finally {
+                mk.fill(0)
+            }
+
+            // Commit. The skipped store takes ownership of the pending mks.
+            state.assignFrom(clone)
+            for (ins in pendingInserts) skipped.put(ins.dhPub, ins.n, ins.mk)
+            committed = true
+            return plaintext
+        } finally {
+            clone.zeroize()
+            if (!committed) for (ins in pendingInserts) ins.mk.fill(0)
         }
-        // Catch up current receiving chain (post-rotation if we rotated, otherwise current).
-        skipMessageKeys(clone, headerN, pendingInserts)
-
-        val ckr = clone.ckr ?: throw InvalidFrame("no receiving chain available")
-        val (newCkr, mk) = RatchetKdf.kdfCk(ckr)
-        ckr.fill(0)
-        clone.ckr = newCkr
-        clone.nr += 1
-
-        // AEAD: throws on failure → clone discarded → state untouched.
-        val plaintext = aeadOpen(mk, ciphertext, aad)
-        mk.fill(0)
-
-        // Commit.
-        state.assignFrom(clone)
-        for (ins in pendingInserts) skipped.put(ins.dhPub, ins.n, ins.mk)
-        clone.zeroize()
-        return plaintext
     }
 
     private class PendingInsert(val dhPub: ByteArray, val n: Int, val mk: ByteArray)

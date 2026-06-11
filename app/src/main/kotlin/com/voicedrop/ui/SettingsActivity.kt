@@ -28,6 +28,11 @@ class SettingsActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         Log.d(TAG, "onCreate start")
         super.onCreate(savedInstanceState)
+        // Identity fingerprint on screen: block recents thumbnails and capture.
+        window.setFlags(
+            android.view.WindowManager.LayoutParams.FLAG_SECURE,
+            android.view.WindowManager.LayoutParams.FLAG_SECURE
+        )
         try {
             setContentView(R.layout.activity_settings)
             Log.d(TAG, "setContentView OK")
@@ -69,6 +74,12 @@ class SettingsActivity : AppCompatActivity() {
         saveUrlButton.setOnClickListener {
             val name = displayNameEdit.text.toString().trim()
             val url = signalingUrlEdit.text.toString().trim()
+            // A ws:// URL would be silently blocked by the platform cleartext
+            // policy later — reject it here with a visible error instead.
+            if (url.isNotBlank() && !url.startsWith("wss://")) {
+                Toast.makeText(this, "Signaling URL must start with wss://", Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
             prefs.edit()
                 .putString("display_name", name.ifBlank { "VoiceDrop User" })
                 .putString("signaling_url", url)

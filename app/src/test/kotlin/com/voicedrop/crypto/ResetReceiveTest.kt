@@ -356,8 +356,11 @@ class ResetReceiveTest {
         assertEquals(initialOutbox + 1, outboxCount(fx.contactId))
         val newest = db.pendingOutboundFrameDao().getByContact(fx.contactId).last()
         val ack = decodeOutbox(fx, newest)
-        // Our re-ack uses OUR persisted nonce per §6.3, NOT the peer's.
-        assertArrayEquals(ourNonce, ack.resetNonce)
+        // Our re-ack uses a FRESH nonce: our persisted nonce already sealed our
+        // own ack=0 initiator frame, and re-keying a different plaintext under
+        // the same K_reset (AEAD nonce is pinned) would be Poly1305 key reuse.
+        assertNotEquals(ourNonce.toHexLower(), ack.resetNonce.toHexLower())
+        assertNotEquals(theirNonce.toHexLower(), ack.resetNonce.toHexLower())
         assertEquals(ResetCrypto.ACK_ACKNOWLEDGER, ack.ackByte)
     }
 

@@ -1,6 +1,7 @@
 package com.voicedrop.crypto
 
 import com.google.crypto.tink.subtle.X25519
+import com.voicedrop.network.FrameCodec
 import java.security.MessageDigest
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -124,6 +125,11 @@ object Bootstrap {
         require(myBootstrapEphPriv.size == X25519_BYTES) { "myBootstrapEphPriv size" }
         require(myBootstrapEphPub.size == X25519_BYTES) { "myBootstrapEphPub size" }
         require(peerBootstrapEphPub.size == X25519_BYTES) { "peerBootstrapEphPub size" }
+        // Same low-order/all-zero screen every other X25519 entry point applies
+        // (Ratchet, ResetReceive): a tampered QR payload with a low-order peer
+        // pub would collapse RK_0 to an attacker-known value.
+        require(isValidX25519Public(peerIdPub)) { "peerIdPub rejected (all-zero/low-order)" }
+        require(isValidX25519Public(peerBootstrapEphPub)) { "peerBootstrapEphPub rejected (all-zero/low-order)" }
 
         val role = decideRole(myIdPub, peerIdPub)
         val idShared = X25519.computeSharedSecret(myIdPriv, peerIdPub)
@@ -176,6 +182,9 @@ object Bootstrap {
         resetNonce?.copyInto(out, p)
         return out
     }
+
+    private fun isValidX25519Public(pub: ByteArray): Boolean =
+        !FrameCodec.isAllZero(pub) && !FrameCodec.isLowOrderX25519(pub)
 
     private fun compareUnsigned(a: ByteArray, b: ByteArray): Int {
         require(a.size == b.size) { "fingerprint size mismatch" }

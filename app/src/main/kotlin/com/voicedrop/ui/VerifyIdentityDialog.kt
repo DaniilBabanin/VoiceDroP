@@ -51,6 +51,11 @@ class VerifyIdentityDialog(
             .create()
 
         dialog.setOnShowListener { refresh(dialog, statusText) }
+        // SAS ceremony: dialogs get their own window — block capture here too.
+        dialog.window?.setFlags(
+            android.view.WindowManager.LayoutParams.FLAG_SECURE,
+            android.view.WindowManager.LayoutParams.FLAG_SECURE
+        )
         dialog.show()
     }
 

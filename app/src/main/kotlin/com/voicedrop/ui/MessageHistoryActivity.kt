@@ -62,6 +62,11 @@ class MessageHistoryActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Message history: block recents thumbnails and screen capture.
+        window.setFlags(
+            android.view.WindowManager.LayoutParams.FLAG_SECURE,
+            android.view.WindowManager.LayoutParams.FLAG_SECURE
+        )
         setContentView(R.layout.activity_message_history)
         EdgeToEdgeSetup.apply(this)
 

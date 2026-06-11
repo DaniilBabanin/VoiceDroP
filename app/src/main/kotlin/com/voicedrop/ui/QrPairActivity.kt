@@ -146,6 +146,11 @@ class QrPairActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Pairing QR + SAS ceremony: block recents thumbnails and screen capture.
+        window.setFlags(
+            android.view.WindowManager.LayoutParams.FLAG_SECURE,
+            android.view.WindowManager.LayoutParams.FLAG_SECURE
+        )
 
         val prefs = getSharedPreferences("voicedrop_settings", MODE_PRIVATE)
         if (prefs.getString("signaling_url", "").isNullOrBlank()) {
@@ -273,7 +278,11 @@ class QrPairActivity : AppCompatActivity() {
 
             val exportDir = File(filesDir, "export")
             exportDir.mkdirs()
-            val exportFile = File(exportDir, "${displayName}.voicedrop")
+            // Exports otherwise accumulate forever; the filename comes from the
+            // unsanitized display name (path-separator chars etc.).
+            exportDir.listFiles()?.forEach { it.delete() }
+            val safeName = displayName.replace(Regex("[^A-Za-z0-9._ -]"), "_").ifBlank { "contact" }
+            val exportFile = File(exportDir, "$safeName.voicedrop")
             exportFile.writeText(cardJson)
 
             val uri = FileProvider.getUriForFile(
@@ -295,8 +304,24 @@ class QrPairActivity : AppCompatActivity() {
         scope.launch {
             try {
                 val content = withContext(Dispatchers.IO) {
-                    contentResolver.openInputStream(uri)?.bufferedReader()?.readText()
-                } ?: return@launch
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        // The activity is BROWSABLE — any app/page can hand us an
+                        // arbitrary content:// source; an unbounded readText() is
+                        // an OOM lever. Cards are well under a few KB.
+                        val buf = ByteArray(MAX_IMPORT_BYTES + 1)
+                        var off = 0
+                        while (off < buf.size) {
+                            val r = input.read(buf, off, buf.size - off)
+                            if (r == -1) break
+                            off += r
+                        }
+                        if (off > MAX_IMPORT_BYTES) null
+                        else String(buf, 0, off, Charsets.UTF_8)
+                    }
+                } ?: run {
+                    showError("Could not read contact card file (missing or too large)")
+                    return@launch
+                }
 
                 handleScannedCard(content)
             } catch (e: Exception) {
@@ -660,6 +685,7 @@ class QrPairActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "VoiceDrop/QrPair"
+        private const val MAX_IMPORT_BYTES = 8 * 1024
         private const val VERIFY_QR_PX = 480
 
         /**

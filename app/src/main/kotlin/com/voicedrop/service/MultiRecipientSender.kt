@@ -3,6 +3,7 @@ package com.voicedrop.service
 import com.voicedrop.crypto.MessagePayload
 import com.voicedrop.crypto.SentFrame
 import com.voicedrop.storage.MessageEntity
+import com.voicedrop.storage.MessageRepository
 import com.voicedrop.storage.TransportType
 import kotlinx.coroutines.CancellationException
 import java.io.File
@@ -33,6 +34,8 @@ class MultiRecipientSender(
     data class SendResult(
         val successfulRecipientIds: List<String>,
         val failedRecipientIds: List<String>,
+        /** Path of the shared opus blob; null when nothing survived on disk. */
+        val sharedPath: String? = null,
     )
 
     /**
@@ -108,10 +111,12 @@ class MultiRecipientSender(
         }
 
         if (successes.isEmpty() && failures.isNotEmpty()) {
-            // No surviving reference to the file — clean it up.
-            sharedFile.delete()
+            // No surviving reference to the file — clean it up (plaintext audio,
+            // so wipe rather than bare delete).
+            MessageRepository.secureDelete(sharedFile)
+            return SendResult(successes, failures, sharedPath = null)
         }
 
-        return SendResult(successes, failures)
+        return SendResult(successes, failures, sharedPath = sharedPath)
     }
 }

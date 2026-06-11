@@ -8,8 +8,8 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.voicedrop.notification.NotificationHelper
 import com.voicedrop.storage.AppDatabase
-import com.voicedrop.storage.MessageEntity
 import com.voicedrop.storage.MessageRepository
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 class AutoDeleteWorker(context: Context, params: WorkerParameters) :
@@ -21,7 +21,8 @@ class AutoDeleteWorker(context: Context, params: WorkerParameters) :
         val notificationHelper = NotificationHelper(applicationContext)
 
         processAutoDeletes(repository, notificationHelper)
-        processOutboxExpiry(repository)
+        sweepShareCache()
+        sweepOrphanOpusBlobs(repository)
 
         return Result.success()
     }
@@ -40,23 +41,36 @@ class AutoDeleteWorker(context: Context, params: WorkerParameters) :
         }
     }
 
-    private suspend fun processOutboxExpiry(repository: MessageRepository) {
-        val sevenDaysAgo = System.currentTimeMillis() - OUTBOX_MAX_AGE_MS
-        val expired = repository.getExpiredPendingActions(sevenDaysAgo)
+    /**
+     * Shared WAVs in `cacheDir/share` are fully-decoded plaintext audio that
+     * otherwise outlive the original message's auto-delete and secure wipe.
+     * Wipe anything past the grace window (chooser grant long consumed).
+     */
+    private fun sweepShareCache() {
+        val cutoff = System.currentTimeMillis() - SWEEP_GRACE_MS
+        File(applicationContext.cacheDir, "share").listFiles()?.forEach { f ->
+            if (f.lastModified() < cutoff) MessageRepository.secureDelete(f)
+        }
+    }
 
-        for (action in expired) {
-            repository.deletePendingAction(action.id)
-            val messages = repository.getExpiredOutbox(sevenDaysAgo)
-            for (message in messages) {
-                if (message.contactId == action.contactId) {
-                    repository.updateMessageState(message.uuid, MessageEntity.STATE_UNDELIVERABLE)
-                }
+    /**
+     * A crash between blob write and row insert (MultiRecipientSender writes the
+     * opus before any row exists) leaves a plaintext file referenced by nothing.
+     * Sweep zero-refcount blobs, with a grace window so an in-flight send isn't
+     * wiped between file write and row commit.
+     */
+    private suspend fun sweepOrphanOpusBlobs(repository: MessageRepository) {
+        val cutoff = System.currentTimeMillis() - SWEEP_GRACE_MS
+        val dir = File(applicationContext.filesDir, "messages")
+        dir.listFiles { f: File -> f.extension == "opus" }?.forEach { f ->
+            if (f.lastModified() < cutoff && repository.countReferencesToFile(f.absolutePath) == 0) {
+                MessageRepository.secureDelete(f)
             }
         }
     }
 
     companion object {
-        private const val OUTBOX_MAX_AGE_MS = 7L * 24 * 60 * 60 * 1000
+        private const val SWEEP_GRACE_MS = 60L * 60 * 1000
         private const val WORK_NAME = "auto_delete"
 
         fun schedule(context: Context) {

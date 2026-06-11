@@ -3,6 +3,7 @@ package com.voicedrop.service
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
@@ -10,6 +11,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
+import androidx.core.app.ServiceCompat
 import com.google.crypto.tink.subtle.X25519
 import com.voicedrop.audio.AudioPlayer
 import com.voicedrop.audio.AudioRecorder
@@ -43,6 +45,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.IOException
 import java.util.UUID
@@ -68,6 +72,14 @@ class VoiceDropService : Service() {
 
     private val audioRecorder = AudioRecorder()
     private val audioPlayer = AudioPlayer()
+
+    // Record start/stop/cancel each ran as an independent coroutine on
+    // multithreaded IO — a fast double-tap could run STOP before START
+    // finished, leaving the mic recording forever with no state to stop it.
+    // The serial dispatcher makes transitions begin in launch order; the mutex
+    // keeps each transition atomic across its suspension points.
+    private val recordSerial = Dispatchers.IO.limitedParallelism(1)
+    private val recordMutex = Mutex()
 
     private var recordingContactIds: List<String> = emptyList()
     private var recordStartTime: Long = 0L
@@ -164,8 +176,21 @@ class VoiceDropService : Service() {
         )
         connectionManager.start()
 
-        // Stay alive as a foreground service so the TCP listener is always up for incoming messages
-        startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
+        // Stay alive as a foreground service so the TCP listener is always up for
+        // incoming messages. Type must be mediaPlayback only — the
+        // two-arg overload uses the manifest types (incl. microphone), and a
+        // mic-type FGS started from background (START_STICKY restart) throws
+        // SecurityException on Android 14+. Mic type is added in startRecording.
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID_IDLE,
+                notificationHelper.buildIdleNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "startForeground(idle) rejected — ${e.message}")
+        }
 
         // DR17.5 W3 startup hooks — replay any outbox accumulated while the
         // process was killed, and resume reset retransmit schedules for any
@@ -273,47 +298,65 @@ class VoiceDropService : Service() {
 
     private fun startRecording(contactIds: List<String>) {
         if (contactIds.isEmpty()) return
-        recordingContactIds = contactIds
-        recordStartTime = System.currentTimeMillis()
-        recordStartElapsedRealtime = SystemClock.elapsedRealtime()
+        scope.launch(recordSerial) {
+            recordMutex.withLock {
+                // Reject START unless idle — a second START would overwrite
+                // audioRecord/recordingJob without releasing the first AudioRecord.
+                if (recordingContactIds.isNotEmpty() || recordingJob != null) {
+                    Log.w(TAG, "startRecording: already recording — ignored")
+                    return@withLock
+                }
+                recordingContactIds = contactIds
+                recordStartTime = System.currentTimeMillis()
+                recordStartElapsedRealtime = SystemClock.elapsedRealtime()
 
-        scope.launch {
-            val firstContact = repository.getContact(contactIds.first())
-            // Notification label: single name if 1 recipient, "N recipients" otherwise.
-            val notificationLabel = if (contactIds.size == 1) {
-                firstContact?.name ?: "Contact"
-            } else {
-                "${contactIds.size} recipients"
-            }
+                val firstContact = repository.getContact(contactIds.first())
+                // Notification label: single name if 1 recipient, "N recipients" otherwise.
+                val notificationLabel = if (contactIds.size == 1) {
+                    firstContact?.name ?: "Contact"
+                } else {
+                    "${contactIds.size} recipients"
+                }
 
-            val notification = notificationHelper.buildRecordingNotification(
-                notificationLabel,
-                recordStartTime,
-            )
-            startForeground(NOTIFICATION_ID_RECORDING, notification)
+                val notification = notificationHelper.buildRecordingNotification(
+                    notificationLabel,
+                    recordStartTime,
+                )
+                // Record start is always user-initiated, so the mic FGS type is
+                // permitted here (Android 14+ while-in-use restriction).
+                ServiceCompat.startForeground(
+                    this@VoiceDropService,
+                    NOTIFICATION_ID_RECORDING,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                )
 
-            vibrateDouble()
-            ServiceState.updateState(
-                ServiceState.State.RECORDING,
-                contactIds,
-                recordStartElapsedRealtime,
-                recordStartTime,
-            )
-            refreshAllWidgets()
+                vibrateDouble()
+                ServiceState.updateState(
+                    ServiceState.State.RECORDING,
+                    contactIds,
+                    recordStartElapsedRealtime,
+                    recordStartTime,
+                )
+                refreshAllWidgets()
 
-            try {
-                audioRecorder.start()
-                recordingJob = scope.async { audioRecorder.recordLoop { } }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start recording", e)
-                returnToIdle()
+                try {
+                    audioRecorder.start()
+                    recordingJob = scope.async { audioRecorder.recordLoop { } }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to start recording", e)
+                    recordingContactIds = emptyList()
+                    returnToIdle()
+                }
             }
         }
     }
 
     private fun stopRecording() {
-        scope.launch {
-            val contactIds = recordingContactIds.takeIf { it.isNotEmpty() } ?: return@launch
+        scope.launch(recordSerial) {
+            recordMutex.withLock {
+            val contactIds = recordingContactIds.takeIf { it.isNotEmpty() } ?: return@withLock
             recordingContactIds = emptyList()
 
             vibrateSingle()
@@ -325,12 +368,14 @@ class VoiceDropService : Service() {
                 audioRecorder.stopRecording()
                 val recordResult = recordingJob?.await() ?: run {
                     Log.w(TAG, "stopRecording: no recordingJob (start failed?) — nothing to send")
-                    return@launch
+                    return@withLock
                 }
                 recordingJob = null
                 val opusBytes = recordResult.opus
                 val waveformPeaks = recordResult.peaks
-                val durationMs = (System.currentTimeMillis() - recordStartTime).toInt()
+                // Monotonic clock — wall clock can step (NTP) mid-recording and
+                // produce a negative/wrong duration that is persisted + sent.
+                val durationMs = (SystemClock.elapsedRealtime() - recordStartElapsedRealtime).toInt()
 
                 // Per-contact auto-delete window: each recipient's row honors that
                 // contact's autoDeleteAfterMs setting.
@@ -342,7 +387,7 @@ class VoiceDropService : Service() {
                 val liveRecipients = contactIds.filter { it in deleteAfterMsByContact }
                 if (liveRecipients.isEmpty()) {
                     Log.w(TAG, "stopRecording: no live recipients (all deleted mid-record?) — dropping send")
-                    return@launch
+                    return@withLock
                 }
 
                 acquireWakeLock()
@@ -359,13 +404,47 @@ class VoiceDropService : Service() {
                     waveformPeaks = waveformPeaks,
                 )
 
-                if (result.failedRecipientIds.isNotEmpty() && result.successfulRecipientIds.isEmpty()) {
-                    // All recipients failed: surface the same UX as the legacy single-recipient
-                    // AwaitingFirstReceive toast. Concrete cause is in the logs.
+                if (result.failedRecipientIds.isNotEmpty()) {
+                    // Partial failure was previously silent and unrecoverable (no
+                    // row, no retry, no feedback unless ALL failed). Persist an
+                    // UNDELIVERABLE row per failed recipient so the failure shows
+                    // in history, and name the failed contacts in the toast.
+                    if (result.sharedPath != null) {
+                        val now = System.currentTimeMillis()
+                        for (id in result.failedRecipientIds) {
+                            repository.insertMessage(
+                                MessageEntity(
+                                    uuid = UUID.randomUUID().toString(),
+                                    contactId = id,
+                                    direction = MessageEntity.DIRECTION_OUTBOUND,
+                                    state = MessageEntity.STATE_UNDELIVERABLE,
+                                    transport = TransportType.UNKNOWN,
+                                    encryptedFilePath = result.sharedPath,
+                                    durationMs = durationMs,
+                                    deleteAfterMs = deleteAfterMsByContact[id] ?: 0L,
+                                    scheduledDeleteAt = 0L,
+                                    transcription = null,
+                                    createdAt = now,
+                                    sentAt = 0L,
+                                    deliveredAt = 0L,
+                                    waveformPeaks = waveformPeaks,
+                                )
+                            )
+                        }
+                    }
+                    val toastText = if (result.successfulRecipientIds.isEmpty()) {
+                        // All recipients failed: same UX as the legacy single-recipient
+                        // AwaitingFirstReceive toast. Concrete cause is in the logs.
+                        "Setting up secure channel — try again in a moment"
+                    } else {
+                        val failedNames = result.failedRecipientIds
+                            .map { repository.getContact(it)?.name ?: "Contact" }
+                        "Couldn't send to ${failedNames.joinToString()}"
+                    }
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         android.widget.Toast.makeText(
                             this@VoiceDropService,
-                            "Setting up secure channel — try again in a moment",
+                            toastText,
                             android.widget.Toast.LENGTH_SHORT
                         ).show()
                     }
@@ -383,6 +462,7 @@ class VoiceDropService : Service() {
                 releaseWakeLock()
                 returnToIdle()
             }
+            }
         }
     }
 
@@ -395,8 +475,9 @@ class VoiceDropService : Service() {
      * in flight — it just no-ops via the `recordingContactIds.isEmpty()` early return.
      */
     private fun cancelRecording() {
-        scope.launch {
-            val contactIds = recordingContactIds.takeIf { it.isNotEmpty() } ?: return@launch
+        scope.launch(recordSerial) {
+            recordMutex.withLock {
+            val contactIds = recordingContactIds.takeIf { it.isNotEmpty() } ?: return@withLock
             recordingContactIds = emptyList()
 
             try {
@@ -411,6 +492,7 @@ class VoiceDropService : Service() {
             } finally {
                 returnToIdle()
                 Log.i(TAG, "recording cancelled for ${contactIds.size} recipient(s); buffer discarded")
+            }
             }
         }
     }
@@ -452,8 +534,13 @@ class VoiceDropService : Service() {
 
                 // Spec 16-played-receipt.md §3 — fire KIND_PLAYED to the sender on
                 // first inbound play. Guard order matters: read state BEFORE update.
-                val isInbound = message.direction == MessageEntity.DIRECTION_INBOUND
-                val isFirstPlay = isInbound &&
+                // completion also resolves on stop(); only count a play that reached
+                // the natural end (or ≥90%) so stop-at-0% doesn't flip PLAYED or
+                // show the sender ✓✓ for unheard audio.
+                val playedEnough = handle.reachedNaturalEnd || handle.progress >= 0.9f
+                val countsAsPlayed = playedEnough &&
+                    message.direction == MessageEntity.DIRECTION_INBOUND
+                val isFirstPlay = countsAsPlayed &&
                     message.state != MessageEntity.STATE_PLAYED
                 // Local STATE_PLAYED is the receiver's "I listened" marker — only ever
                 // written on INBOUND rows. Outbound rows reach STATE_PLAYED solely via a
@@ -461,7 +548,7 @@ class VoiceDropService : Service() {
                 // an outbound row on local playback — e.g. reviewing your own sent message,
                 // or playing a note-to-self — would light the blue ✓✓ before the recipient
                 // ever listened.
-                if (isInbound) {
+                if (countsAsPlayed) {
                     repository.updateMessageState(uuid, MessageEntity.STATE_PLAYED)
                 }
                 if (isFirstPlay) {
@@ -504,7 +591,12 @@ class VoiceDropService : Service() {
      * record-start error path and the send / cancel `finally` blocks.
      */
     private fun returnToIdle() {
-        startForeground(NOTIFICATION_ID_IDLE, notificationHelper.buildIdleNotification())
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID_IDLE,
+            notificationHelper.buildIdleNotification(),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+        )
         ServiceState.updateState(ServiceState.State.IDLE, emptyList())
         refreshAllWidgets()
     }

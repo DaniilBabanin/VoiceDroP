@@ -420,14 +420,21 @@ class ResetReceive(
             eventLog("reset.acknowledged contact=${contact.id} R=$rIn")
             Outcome.Acknowledged
         } else {
-            // Peer retransmitted ack=0 (or concurrent init at same R): re-ack with OUR persisted nonce.
+            // Peer retransmitted ack=0 (or concurrent init at same R): re-ack.
+            // The re-ack gets a FRESH nonce: in concurrent init our persisted
+            // nonce already sealed our own ack=0 initiator frame, and the AEAD
+            // nonce is pinned — reusing that K_reset for a different plaintext
+            // would be Poly1305 one-time-key reuse (tag forgery under K_reset).
+            // Safe on the wire: the receiver derives K_reset from the nonce
+            // carried in the frame header, and the convergence/lost-ack receive
+            // paths never consume an ack frame's nonce for state.
             upsertContactBlocking(updated)
-            val nonce = contact.reset_nonce ?: error("reset_nonce missing while expecting_ack=true")
+            check(contact.reset_nonce != null) { "reset_nonce missing while expecting_ack=true" }
             enqueueAckOutbound(
                 contact = updated,
                 idShared = idShared,
                 prekeySS = prekeySS,
-                resetNonce = nonce,
+                resetNonce = ResetCrypto.newResetNonce(),
                 rOut = rIn,
                 myRoleIsBob = myRoleIsBob,
                 stagedPrekeyPub = readOwnActivePrekeyPub(contact.id),
@@ -460,19 +467,20 @@ class ResetReceive(
         if (updated !== contact) upsertContactBlocking(updated)
 
         return if (plaintext.ack == ResetCrypto.ACK_INITIATOR) {
-            val nonce = contact.reset_nonce
-            if (nonce == null) {
+            if (contact.reset_nonce == null) {
                 // Unsolicited ack=0 at our current R with no persisted nonce — happens
                 // only on a freshly-paired contact where R==0 has never been touched.
-                // We have no meaningful nonce to bind our re-ack to; drop silently.
+                // No reset is in flight to re-ack; drop silently.
                 eventLog("reset.lost_ack_dropped_no_nonce contact=${contact.id} R=$rIn")
                 return Outcome.Replayed
             }
+            // Fresh nonce for the same reason as the convergence re-ack: if we
+            // initiated this R, our ack=0 already used contact.reset_nonce.
             enqueueAckOutbound(
                 contact = updated,
                 idShared = idShared,
                 prekeySS = prekeySS,
-                resetNonce = nonce,
+                resetNonce = ResetCrypto.newResetNonce(),
                 rOut = rIn,
                 myRoleIsBob = myRoleIsBob,
                 stagedPrekeyPub = readOwnActivePrekeyPub(contact.id),

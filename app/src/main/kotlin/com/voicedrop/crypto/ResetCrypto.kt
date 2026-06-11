@@ -32,6 +32,10 @@ import javax.crypto.spec.SecretKeySpec
  *
  * Retransmits of the *same* reset reuse the same `resetNonce` deliberately, so
  * the ciphertext is bit-identical and idempotent at the receiver — see [dr15].
+ * Exception: re-acks emitted from the convergence/lost-ack branches use a FRESH
+ * nonce — in concurrent init the persisted nonce already sealed our own ack=0
+ * frame, and sealing a different plaintext (ack=1) under the same `K_reset`
+ * with the pinned AEAD nonce would be Poly1305 one-time-key reuse.
  *
  * Receive logic, manual-init transaction, and rate caps live in [dr13]/[dr14].
  */

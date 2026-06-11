@@ -56,6 +56,10 @@ class MessageRepository(
     suspend fun getExpiredOutbox(olderThanMs: Long): List<MessageEntity> =
         messageDao.getExpiredOutbox(olderThanMs)
 
+    /** Rows still referencing [path] — used by the orphan-blob sweep. */
+    suspend fun countReferencesToFile(path: String): Int =
+        messageDao.countByEncryptedFilePath(path)
+
     /**
      * Hard-delete a message row and, if no other row references the same
      * on-disk opus file, secure-delete the file. The refcount makes fan-out
@@ -98,23 +102,34 @@ class MessageRepository(
         }
     }
 
-    private fun secureDeleteFile(file: File) {
-        if (!file.exists()) return
-        try {
-            val length = file.length()
-            if (length > 0) {
-                file.outputStream().use { out ->
-                    val zeros = ByteArray(minOf(length, 65536).toInt())
-                    var remaining = length
-                    while (remaining > 0) {
-                        val toWrite = minOf(remaining, zeros.size.toLong()).toInt()
-                        out.write(zeros, 0, toWrite)
-                        remaining -= toWrite
+    private fun secureDeleteFile(file: File) = secureDelete(file)
+
+    companion object {
+        /**
+         * Best-effort secure delete: overwrite the existing bytes in place
+         * (no truncation — FileOutputStream would O_TRUNC and free the original
+         * blocks before any zeros are written), flush to disk, then delete.
+         * On wear-leveled flash this is best-effort, not a guarantee.
+         */
+        fun secureDelete(file: File) {
+            if (!file.exists()) return
+            try {
+                val length = file.length()
+                if (length > 0) {
+                    java.io.RandomAccessFile(file, "rwd").use { raf ->
+                        raf.seek(0)
+                        val zeros = ByteArray(minOf(length, 65536).toInt())
+                        var remaining = length
+                        while (remaining > 0) {
+                            val toWrite = minOf(remaining, zeros.size.toLong()).toInt()
+                            raf.write(zeros, 0, toWrite)
+                            remaining -= toWrite
+                        }
                     }
                 }
+            } finally {
+                file.delete()
             }
-        } finally {
-            file.delete()
         }
     }
 
