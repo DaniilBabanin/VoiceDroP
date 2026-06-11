@@ -1,0 +1,15 @@
+# Automated dependency update PRs for all three ecosystems.
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /cloudflare-worker
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

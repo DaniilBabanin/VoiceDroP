@@ -13,10 +13,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -71,7 +71,7 @@ jobs:
           fi
 
       - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: voicedrop-debug-${{ github.sha }}
           path: app/build/outputs/apk/debug/app-debug.apk
@@ -85,19 +85,19 @@ jobs:
         working-directory: cloudflare-worker
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Node.js 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
 
-      # vitest-pool-workers runs the suite inside workerd. No package-lock is
-      # committed, so use `npm install` (not `npm ci`). The worker auto-deploys
-      # via Cloudflare Git integration with no test gate, so this job is the only
-      # automated check of the mailbox-auth crypto (A1, Finding #1).
+      # vitest-pool-workers runs the suite inside workerd. package-lock.json is
+      # committed, so `npm ci` gives reproducible dependency resolution. The
+      # worker auto-deploys via Cloudflare Git integration with no test gate, so
+      # this job is the only automated check of the mailbox-auth crypto (A1).
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run worker unit tests
         run: npm test
@@ -108,10 +108,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
         with:
           java-version: '17'
           distribution: 'temurin'
